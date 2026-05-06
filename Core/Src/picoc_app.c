@@ -12,12 +12,16 @@
 #define PICOC_APP_LOAD_BUFFER_SIZE       8192U
 #define PICOC_APP_RX_CHUNK_SIZE          64U
 #define PICOC_APP_LOAD_PROMPT            "load> "
-#define PICOC_APP_LOAD_ENTER_MESSAGE     "\r\nload mode: send C source, ':end' to run, ':abort' to cancel\r\n"
-#define PICOC_APP_LOAD_ABORT_MESSAGE     "\r\nload cancelled\r\n"
-#define PICOC_APP_LOAD_EMPTY_MESSAGE     "\r\nno source loaded\r\n"
-#define PICOC_APP_LOAD_READY_MESSAGE     "\r\nready for next file\r\n"
-#define PICOC_APP_LOAD_OVERFLOW_MESSAGE  "\r\nload buffer full, upload cancelled\r\n"
-#define PICOC_APP_LINE_OVERFLOW_MESSAGE  "\r\ninput line too long\r\n"
+#define PICOC_APP_DRAIN_IDLE_THRESHOLD  10U
+
+/* --- structured protocol responses --- */
+#define PICOC_APP_RESP_OK                ":ok\r\n"
+#define PICOC_APP_RESP_OK_READY          ":ok ready\r\n"
+#define PICOC_APP_RESP_PONG              ":pong\r\n"
+#define PICOC_APP_RESP_ERR_BUFFER_FULL   ":err buffer full\r\n"
+#define PICOC_APP_RESP_ERR_NO_SOURCE     ":err no source\r\n"
+#define PICOC_APP_RESP_ERR_LINE_LONG     ":err line too long\r\n"
+#define PICOC_APP_RESP_ERR_LOAD_CANCELLED ":err load cancelled\r\n"
 
 typedef struct
 {
@@ -34,7 +38,8 @@ typedef struct
 typedef enum
 {
     PICOC_APP_MODE_REPL = 0,
-    PICOC_APP_MODE_LOAD
+    PICOC_APP_MODE_LOAD,
+    PICOC_APP_MODE_DRAIN
 } PicocApp_Mode;
 
 typedef enum
@@ -42,7 +47,11 @@ typedef enum
     PICOC_APP_COMMAND_NONE = 0,
     PICOC_APP_COMMAND_LOAD,
     PICOC_APP_COMMAND_END,
-    PICOC_APP_COMMAND_ABORT
+    PICOC_APP_COMMAND_ABORT,
+    PICOC_APP_COMMAND_PING,
+    PICOC_APP_COMMAND_RESET,
+    PICOC_APP_COMMAND_BKPT,
+    PICOC_APP_COMMAND_BKPTCLEAR
 } PicocApp_Command;
 
 static Picoc g_picoc;
@@ -52,11 +61,13 @@ static uint32_t g_source_length = 0U;
 static uint32_t g_load_length = 0U;
 static uint8_t g_prompt_pending = 0U;
 static uint8_t g_last_char_was_cr = 0U;
+static uint32_t g_drain_idle_count = 0U;
 static PicocApp_Mode g_mode = PICOC_APP_MODE_REPL;
 static const char *g_prompt_text = INTERACTIVE_PROMPT_STATEMENT;
 
 static void PicocApp_WriteString(const char *text);
 static void PicocApp_WriteByte(uint8_t ch);
+static void PicocApp_SendResponse(const char *msg);
 static void PicocApp_ShowPrompt(void);
 static void PicocApp_HandleChar(uint8_t ch);
 static void PicocApp_HandleReplChar(uint8_t ch);
@@ -72,7 +83,8 @@ static void PicocApp_ExecuteReplSource(void);
 static void PicocApp_ExecuteLoadSource(void);
 static void PicocApp_RunSource(Picoc *pc, const char *file_name, const char *source, int auto_print_expression, int auto_call_main);
 static int PicocApp_HasMainFunction(Picoc *pc);
-static PicocApp_Command PicocApp_ParseCommand(const uint8_t *buffer, uint32_t length);
+static PicocApp_Command PicocApp_ParseCommand(const uint8_t *buffer, uint32_t length, uint32_t *out_param);
+static void PicocApp_HandleBkptCommand(const char *cmd_text, int set);
 static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *state);
 static int PicocApp_IsSourceComplete(const char *source, const PicocApp_SourceState *state);
 static int PicocApp_ShouldAutoPrintExpression(const char *source, const PicocApp_SourceState *state);
@@ -97,9 +109,29 @@ void PicocApp_Task(void)
     uint32_t index;
 
     rx_len = SerialApp_Read(rx_buffer, sizeof(rx_buffer));
-    for (index = 0U; index < rx_len; index++)
+
+    if (g_mode == PICOC_APP_MODE_DRAIN)
     {
-        PicocApp_HandleChar(rx_buffer[index]);
+        if (rx_len == 0U)
+        {
+            g_drain_idle_count++;
+            if (g_drain_idle_count >= PICOC_APP_DRAIN_IDLE_THRESHOLD)
+            {
+                g_mode = PICOC_APP_MODE_REPL;
+                g_drain_idle_count = 0U;
+            }
+        }
+        else
+        {
+            g_drain_idle_count = 0U;
+        }
+    }
+    else
+    {
+        for (index = 0U; index < rx_len; index++)
+        {
+            PicocApp_HandleChar(rx_buffer[index]);
+        }
     }
 
     if (g_prompt_pending != 0U && rx_len == 0U)
@@ -142,6 +174,11 @@ static void PicocApp_WriteByte(uint8_t ch)
     }
 }
 
+static void PicocApp_SendResponse(const char *msg)
+{
+    PicocApp_WriteString(msg);
+}
+
 static void PicocApp_ShowPrompt(void)
 {
     PicocApp_WriteString(g_prompt_text);
@@ -161,6 +198,12 @@ static void PicocApp_HandleChar(uint8_t ch)
         return;
     }
 
+    if (g_mode == PICOC_APP_MODE_DRAIN)
+    {
+        g_last_char_was_cr = (ch == '\r') ? 1U : 0U;
+        return;
+    }
+
     if (g_mode == PICOC_APP_MODE_LOAD)
     {
         PicocApp_HandleLoadChar(ch);
@@ -177,15 +220,66 @@ static void PicocApp_HandleReplChar(uint8_t ch)
     {
         PicocApp_SourceState state;
         PicocApp_Command command;
+        uint32_t cmd_param = 0U;
 
         g_last_char_was_cr = (ch == '\r') ? 1U : 0U;
         g_source_buffer[g_source_length] = '\0';
-        command = PicocApp_ParseCommand(g_source_buffer, g_source_length);
+        command = PicocApp_ParseCommand(g_source_buffer, g_source_length, &cmd_param);
+
         if (command == PICOC_APP_COMMAND_LOAD)
         {
             PicocApp_WriteString("\r\n");
+            if (cmd_param > 0U && cmd_param > (PICOC_APP_LOAD_BUFFER_SIZE - 1U))
+            {
+                PicocApp_SendResponse(PICOC_APP_RESP_ERR_BUFFER_FULL);
+                PicocApp_ResetSource();
+                g_prompt_pending = 1U;
+                return;
+            }
+            PicocApp_SendResponse(PICOC_APP_RESP_OK);
             PicocApp_ResetSource();
             PicocApp_EnterLoadMode();
+            g_prompt_pending = 1U;
+            return;
+        }
+
+        if (command == PICOC_APP_COMMAND_PING)
+        {
+            PicocApp_WriteString("\r\n");
+            PicocApp_SendResponse(PICOC_APP_RESP_PONG);
+            PicocApp_ResetSource();
+            g_prompt_pending = 1U;
+            return;
+        }
+
+        if (command == PICOC_APP_COMMAND_RESET)
+        {
+            PicocApp_WriteString("\r\n");
+            PicocApp_ResetSource();
+            PicocApp_ResetLoadBuffer();
+            g_mode = PICOC_APP_MODE_REPL;
+            g_prompt_text = INTERACTIVE_PROMPT_STATEMENT;
+            PicocApp_SendResponse(PICOC_APP_RESP_OK);
+            g_prompt_pending = 1U;
+            return;
+        }
+
+        if (command == PICOC_APP_COMMAND_BKPT)
+        {
+            PicocApp_WriteString("\r\n");
+            PicocApp_HandleBkptCommand((const char *)g_source_buffer, TRUE);
+            PicocApp_ResetSource();
+            g_prompt_text = INTERACTIVE_PROMPT_STATEMENT;
+            g_prompt_pending = 1U;
+            return;
+        }
+
+        if (command == PICOC_APP_COMMAND_BKPTCLEAR)
+        {
+            PicocApp_WriteString("\r\n");
+            PicocApp_HandleBkptCommand((const char *)g_source_buffer, FALSE);
+            PicocApp_ResetSource();
+            g_prompt_text = INTERACTIVE_PROMPT_STATEMENT;
             g_prompt_pending = 1U;
             return;
         }
@@ -226,7 +320,7 @@ static void PicocApp_HandleReplChar(uint8_t ch)
 
     if (PicocApp_AppendByte(g_source_buffer, &g_source_length, sizeof(g_source_buffer), ch) == 0)
     {
-        PicocApp_WriteString(PICOC_APP_LINE_OVERFLOW_MESSAGE);
+        PicocApp_SendResponse(PICOC_APP_RESP_ERR_LINE_LONG);
         PicocApp_ResetSource();
         g_prompt_text = INTERACTIVE_PROMPT_STATEMENT;
         g_prompt_pending = 1U;
@@ -241,10 +335,30 @@ static void PicocApp_HandleLoadChar(uint8_t ch)
     if (ch == '\r' || ch == '\n')
     {
         PicocApp_Command command;
+        uint32_t cmd_param = 0U;
 
         g_last_char_was_cr = (ch == '\r') ? 1U : 0U;
         g_source_buffer[g_source_length] = '\0';
-        command = PicocApp_ParseCommand(g_source_buffer, g_source_length);
+        command = PicocApp_ParseCommand(g_source_buffer, g_source_length, &cmd_param);
+
+        if (command == PICOC_APP_COMMAND_LOAD)
+        {
+            PicocApp_WriteString("\r\n");
+            if (cmd_param > 0U && cmd_param > (PICOC_APP_LOAD_BUFFER_SIZE - 1U))
+            {
+                PicocApp_SendResponse(PICOC_APP_RESP_ERR_BUFFER_FULL);
+                PicocApp_ResetLineBuffer();
+                PicocApp_ResetLoadBuffer();
+                PicocApp_LeaveLoadMode();
+                g_prompt_pending = 1U;
+                return;
+            }
+            PicocApp_SendResponse(PICOC_APP_RESP_OK);
+            PicocApp_ResetLineBuffer();
+            PicocApp_ResetLoadBuffer();
+            g_prompt_pending = 1U;
+            return;
+        }
 
         if (command == PICOC_APP_COMMAND_END)
         {
@@ -252,7 +366,7 @@ static void PicocApp_HandleLoadChar(uint8_t ch)
             PicocApp_ResetLineBuffer();
             PicocApp_ExecuteLoadSource();
             PicocApp_ResetLoadBuffer();
-            PicocApp_WriteString(PICOC_APP_LOAD_READY_MESSAGE);
+            PicocApp_SendResponse(PICOC_APP_RESP_OK_READY);
             g_prompt_text = PICOC_APP_LOAD_PROMPT;
             g_prompt_pending = 1U;
             return;
@@ -263,13 +377,49 @@ static void PicocApp_HandleLoadChar(uint8_t ch)
             PicocApp_WriteString("\r\n");
             PicocApp_ResetLineBuffer();
             PicocApp_ResetLoadBuffer();
-            PicocApp_WriteString(PICOC_APP_LOAD_ABORT_MESSAGE);
+            PicocApp_SendResponse(PICOC_APP_RESP_ERR_LOAD_CANCELLED);
             PicocApp_LeaveLoadMode();
             g_prompt_pending = 1U;
             return;
         }
 
-        PicocApp_WriteString("\r\n");
+        if (command == PICOC_APP_COMMAND_PING)
+        {
+            PicocApp_WriteString("\r\n");
+            PicocApp_SendResponse(PICOC_APP_RESP_PONG);
+            PicocApp_ResetLineBuffer();
+            g_prompt_pending = 1U;
+            return;
+        }
+
+        if (command == PICOC_APP_COMMAND_RESET)
+        {
+            PicocApp_WriteString("\r\n");
+            PicocApp_ResetLineBuffer();
+            PicocApp_ResetLoadBuffer();
+            PicocApp_LeaveLoadMode();
+            PicocApp_SendResponse(PICOC_APP_RESP_OK);
+            g_prompt_pending = 1U;
+            return;
+        }
+
+        if (command == PICOC_APP_COMMAND_BKPT)
+        {
+            PicocApp_WriteString("\r\n");
+            PicocApp_HandleBkptCommand((const char *)g_source_buffer, TRUE);
+            PicocApp_ResetLineBuffer();
+            g_prompt_pending = 1U;
+            return;
+        }
+
+        if (command == PICOC_APP_COMMAND_BKPTCLEAR)
+        {
+            PicocApp_WriteString("\r\n");
+            PicocApp_HandleBkptCommand((const char *)g_source_buffer, FALSE);
+            PicocApp_ResetLineBuffer();
+            g_prompt_pending = 1U;
+            return;
+        }
 
         if (PicocApp_AppendBlock(g_load_buffer,
                                  &g_load_length,
@@ -278,10 +428,13 @@ static void PicocApp_HandleLoadChar(uint8_t ch)
                                  g_source_length) == 0 ||
             PicocApp_AppendByte(g_load_buffer, &g_load_length, sizeof(g_load_buffer), '\n') == 0)
         {
-            PicocApp_WriteString(PICOC_APP_LOAD_OVERFLOW_MESSAGE);
+            PicocApp_SendResponse(PICOC_APP_RESP_ERR_BUFFER_FULL);
             PicocApp_ResetLineBuffer();
             PicocApp_ResetLoadBuffer();
             PicocApp_LeaveLoadMode();
+            g_mode = PICOC_APP_MODE_DRAIN;
+            g_drain_idle_count = 0U;
+            g_last_char_was_cr = 0U;
             g_prompt_pending = 1U;
             return;
         }
@@ -299,22 +452,22 @@ static void PicocApp_HandleLoadChar(uint8_t ch)
         {
             g_source_length--;
             g_source_buffer[g_source_length] = '\0';
-            PicocApp_WriteString("\b \b");
         }
         return;
     }
 
     if (PicocApp_AppendByte(g_source_buffer, &g_source_length, sizeof(g_source_buffer), ch) == 0)
     {
-        PicocApp_WriteString(PICOC_APP_LINE_OVERFLOW_MESSAGE);
+        PicocApp_SendResponse(PICOC_APP_RESP_ERR_LINE_LONG);
         PicocApp_ResetLineBuffer();
         PicocApp_ResetLoadBuffer();
         PicocApp_LeaveLoadMode();
+        g_mode = PICOC_APP_MODE_DRAIN;
+        g_drain_idle_count = 0U;
+        g_last_char_was_cr = 0U;
         g_prompt_pending = 1U;
         return;
     }
-
-    PicocApp_WriteByte(ch);
 }
 
 static int PicocApp_AppendByte(uint8_t *buffer, uint32_t *length, uint32_t capacity, uint8_t ch)
@@ -366,7 +519,6 @@ static void PicocApp_EnterLoadMode(void)
     g_prompt_text = PICOC_APP_LOAD_PROMPT;
     PicocApp_ResetLineBuffer();
     PicocApp_ResetLoadBuffer();
-    PicocApp_WriteString(PICOC_APP_LOAD_ENTER_MESSAGE);
 }
 
 static void PicocApp_LeaveLoadMode(void)
@@ -388,13 +540,15 @@ static void PicocApp_ExecuteLoadSource(void)
 
     if (g_load_length == 0U)
     {
-        PicocApp_WriteString(PICOC_APP_LOAD_EMPTY_MESSAGE);
+        PicocApp_SendResponse(PICOC_APP_RESP_ERR_NO_SOURCE);
         return;
     }
 
     PicocInitialise(&isolated_picoc, PICOC_APP_STACK_SIZE);
+    DebugCopyBreakpoints(&g_picoc, &isolated_picoc);
     PicocApp_RunSource(&isolated_picoc, "serial_load", (const char *)g_load_buffer, FALSE, TRUE);
     PicocCleanup(&isolated_picoc);
+    DebugClearAllBreakpoints(&g_picoc);
 }
 
 static void PicocApp_RunSource(Picoc *pc, const char *file_name, const char *source, int auto_print_expression, int auto_call_main)
@@ -438,6 +592,7 @@ static void PicocApp_RunSource(Picoc *pc, const char *file_name, const char *sou
                    TRUE,
                    FALSE,
                    TRUE);
+        DebugCancelStep();
 
         if (auto_call_main != 0 && had_main_before == 0 && PicocApp_HasMainFunction(pc) != 0)
         {
@@ -451,10 +606,12 @@ static int PicocApp_HasMainFunction(Picoc *pc)
     return VariableDefined(pc, TableStrRegister(pc, "main"));
 }
 
-static PicocApp_Command PicocApp_ParseCommand(const uint8_t *buffer, uint32_t length)
+static PicocApp_Command PicocApp_ParseCommand(const uint8_t *buffer, uint32_t length, uint32_t *out_param)
 {
     uint32_t start = 0U;
     uint32_t end = length;
+
+    *out_param = 0U;
 
     while (start < length &&
            (buffer[start] == ' ' || buffer[start] == '\t' || buffer[start] == '\r' || buffer[start] == '\n'))
@@ -470,22 +627,117 @@ static PicocApp_Command PicocApp_ParseCommand(const uint8_t *buffer, uint32_t le
 
     length = end - start;
 
-    if (length == (sizeof(":load") - 1U) && memcmp(&buffer[start], ":load", sizeof(":load") - 1U) == 0)
+    /* :load [<size>] */
+    if (length >= 5U && memcmp(&buffer[start], ":load", 5U) == 0)
     {
+        if (length > 5U && (buffer[start + 5U] == ' ' || buffer[start + 5U] == '\t'))
+        {
+            uint32_t pos = start + 5U;
+            while (pos < end && (buffer[pos] == ' ' || buffer[pos] == '\t'))
+            {
+                pos++;
+            }
+            while (pos < end && buffer[pos] >= '0' && buffer[pos] <= '9')
+            {
+                *out_param = (*out_param * 10U) + (uint32_t)(buffer[pos] - '0');
+                pos++;
+            }
+        }
         return PICOC_APP_COMMAND_LOAD;
     }
 
-    if (length == (sizeof(":end") - 1U) && memcmp(&buffer[start], ":end", sizeof(":end") - 1U) == 0)
+    if (length == 5U && memcmp(&buffer[start], ":ping", 5U) == 0)
+    {
+        return PICOC_APP_COMMAND_PING;
+    }
+
+    if (length == 6U && memcmp(&buffer[start], ":reset", 6U) == 0)
+    {
+        return PICOC_APP_COMMAND_RESET;
+    }
+
+    if (length == 4U && memcmp(&buffer[start], ":end", 4U) == 0)
     {
         return PICOC_APP_COMMAND_END;
     }
 
-    if (length == (sizeof(":abort") - 1U) && memcmp(&buffer[start], ":abort", sizeof(":abort") - 1U) == 0)
+    if (length == 6U && memcmp(&buffer[start], ":abort", 6U) == 0)
     {
         return PICOC_APP_COMMAND_ABORT;
     }
 
+    if (length >= 6U && memcmp(&buffer[start], ":bkpt", 5U) == 0 && (buffer[start + 5U] == ' ' || buffer[start + 5U] == '\t'))
+    {
+        return PICOC_APP_COMMAND_BKPT;
+    }
+
+    if (length >= 11U && memcmp(&buffer[start], ":bkptclear", 10U) == 0 && (buffer[start + 10U] == ' ' || buffer[start + 10U] == '\t'))
+    {
+        return PICOC_APP_COMMAND_BKPTCLEAR;
+    }
+
     return PICOC_APP_COMMAND_NONE;
+}
+
+static void PicocApp_HandleBkptCommand(const char *cmd_text, int set)
+{
+    const char *ptr;
+    const char *filename_start;
+    int filename_len;
+    int line_no;
+    char filename_buf[64];
+    char *reg_file;
+    struct ParseState bkpt_parser;
+
+    /* skip command prefix: ":bkpt " or ":bkptclear " */
+    ptr = cmd_text + 6;
+    if (!set)
+        ptr += 5;
+
+    while (*ptr == ' ' || *ptr == '\t')
+        ptr++;
+
+    /* extract filename */
+    filename_start = ptr;
+    while (*ptr != ' ' && *ptr != '\t' && *ptr != '\0')
+        ptr++;
+    filename_len = (int)(ptr - filename_start);
+    if (filename_len <= 0 || filename_len >= (int)sizeof(filename_buf))
+    {
+        PicocApp_SendResponse(":err bkpt invalid filename\r\n");
+        return;
+    }
+    memcpy(filename_buf, filename_start, (size_t)filename_len);
+    filename_buf[filename_len] = '\0';
+
+    /* extract line number */
+    while (*ptr == ' ' || *ptr == '\t')
+        ptr++;
+    line_no = 0;
+    while (*ptr >= '0' && *ptr <= '9')
+    {
+        line_no = line_no * 10 + (*ptr - '0');
+        ptr++;
+    }
+    if (line_no <= 0)
+    {
+        PicocApp_SendResponse(":err bkpt invalid line\r\n");
+        return;
+    }
+
+    reg_file = TableStrRegister(&g_picoc, filename_buf);
+    memset(&bkpt_parser, 0, sizeof(bkpt_parser));
+    bkpt_parser.pc = &g_picoc;
+    bkpt_parser.FileName = reg_file;
+    bkpt_parser.Line = line_no;
+    bkpt_parser.CharacterPos = 0;
+
+    if (set)
+        DebugSetBreakpoint(&bkpt_parser);
+    else
+        DebugClearBreakpoint(&bkpt_parser);
+
+    PicocApp_SendResponse(set ? ":ok bkpt\r\n" : ":ok bkptclear\r\n");
 }
 
 static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *state)

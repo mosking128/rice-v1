@@ -7,6 +7,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -48,7 +49,6 @@ class MainWindow(QMainWindow):
         self._console_line_buffer = ""
         self._upload_active = False
         self._execution_separator_pending = False
-        self._pending_echo_lines: list[str] = []
         self._serial_manager = SerialManager()
         self._session = PicocSession()
 
@@ -69,9 +69,44 @@ class MainWindow(QMainWindow):
 
         root.addWidget(self._build_connection_group())
         root.addWidget(self._build_console_group(), 1)
+        root.addWidget(self._build_debug_toolbar())
         root.addWidget(self._build_actions_group())
 
         self.setCentralWidget(central)
+
+    def _build_debug_toolbar(self) -> QFrame:
+        self.debug_toolbar = QFrame(self)
+        self.debug_toolbar.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
+        layout = QHBoxLayout(self.debug_toolbar)
+        layout.setContentsMargins(6, 4, 6, 4)
+
+        self.debug_info_label = QLabel("调试未激活")
+        layout.addWidget(self.debug_info_label, 1)
+
+        layout.addWidget(QLabel("行号"))
+        self.debug_bp_line = QLineEdit()
+        self.debug_bp_line.setPlaceholderText("42")
+        self.debug_bp_line.setFixedWidth(50)
+        layout.addWidget(self.debug_bp_line)
+
+        self.debug_bp_set_btn = QPushButton("设断点")
+        self.debug_bp_clear_btn = QPushButton("清断点")
+        layout.addWidget(self.debug_bp_set_btn)
+        layout.addWidget(self.debug_bp_clear_btn)
+
+        layout.addWidget(QLabel("  "))
+        self.debug_continue_btn = QPushButton("继续")
+        self.debug_step_btn = QPushButton("单步")
+        self.debug_eval_input = QLineEdit()
+        self.debug_eval_input.setPlaceholderText("表达式...")
+        self.debug_eval_input.setFixedWidth(120)
+        self.debug_eval_btn = QPushButton("求值")
+
+        layout.addWidget(self.debug_continue_btn)
+        layout.addWidget(self.debug_step_btn)
+        layout.addWidget(self.debug_eval_input)
+        layout.addWidget(self.debug_eval_btn)
+        return self.debug_toolbar
 
     def _build_connection_group(self) -> QGroupBox:
         group = QGroupBox("连接")
@@ -127,14 +162,12 @@ class MainWindow(QMainWindow):
 
         self.file_path_edit = QLineEdit()
         self.file_path_edit.setPlaceholderText("选择一个 .c 文件或从列表中选中...")
-        self.browse_button = QPushButton("添加单文件")
+        self.browse_button = QPushButton("添加文件")
         self.file_list = QListWidget()
         self.file_list.setSelectionMode(QListWidget.SingleSelection)
 
         self.upload_button = QPushButton("执行选中")
         self.run_all_button = QPushButton("全部执行")
-        self.batch_files_button = QPushButton("添加多文件")
-        self.batch_folder_button = QPushButton("从文件夹添加")
         self.clear_list_button = QPushButton("清空列表")
         self.abort_button = QPushButton("中止")
         self.clear_button = QPushButton("清空控制台")
@@ -150,9 +183,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.run_all_button, 2, 4)
         layout.addWidget(self.abort_button, 3, 4)
 
-        layout.addWidget(self.batch_files_button, 4, 1)
-        layout.addWidget(self.batch_folder_button, 4, 2)
-        layout.addWidget(self.clear_list_button, 4, 3)
+        layout.addWidget(self.clear_list_button, 4, 1)
         layout.addWidget(self.save_button, 4, 4)
         layout.addWidget(self.clear_button, 5, 4)
         return group
@@ -164,9 +195,7 @@ class MainWindow(QMainWindow):
         self.send_button.clicked.connect(self._send_manual_input)
         self.manual_input.returnPressed.connect(self._send_manual_input)
 
-        self.browse_button.clicked.connect(self._browse_file)
-        self.batch_files_button.clicked.connect(self._select_batch_files)
-        self.batch_folder_button.clicked.connect(self._select_batch_folder)
+        self.browse_button.clicked.connect(self._browse_files)
         self.upload_button.clicked.connect(self._upload_file)
         self.run_all_button.clicked.connect(self._run_all_files)
         self.clear_list_button.clicked.connect(self._clear_file_list)
@@ -185,6 +214,15 @@ class MainWindow(QMainWindow):
         self._session.status_changed.connect(self._set_status)
         self._session.upload_finished.connect(self._handle_upload_finished)
         self._session.upload_state_changed.connect(self._handle_upload_state_changed)
+
+        self._session.debug_break.connect(self._on_debug_break)
+        self._session.debug_resumed.connect(self._on_debug_resumed)
+        self.debug_continue_btn.clicked.connect(lambda: self._session.send_debug_continue())
+        self.debug_step_btn.clicked.connect(lambda: self._session.send_debug_step())
+        self.debug_eval_btn.clicked.connect(self._on_eval_clicked)
+        self.debug_eval_input.returnPressed.connect(self._on_eval_clicked)
+        self.debug_bp_set_btn.clicked.connect(self._on_bp_set_clicked)
+        self.debug_bp_clear_btn.clicked.connect(self._on_bp_clear_clicked)
 
     def _refresh_ports(self) -> None:
         current = self.port_combo.currentText()
@@ -210,33 +248,17 @@ class MainWindow(QMainWindow):
         if not text:
             return
         if self._session.send_manual(text):
-            self._append_local_command(text)
             self.manual_input.clear()
 
-    def _browse_file(self) -> None:
-        filename, _ = QFileDialog.getOpenFileName(
+    def _browse_files(self) -> None:
+        filenames, _ = QFileDialog.getOpenFileNames(
             self,
             "选择 C 文件",
             "",
             "C source (*.c);;All files (*.*)",
         )
-        if filename:
-            self._add_files_to_list([Path(filename)])
-
-    def _select_batch_files(self) -> None:
-        filenames, _ = QFileDialog.getOpenFileNames(
-            self,
-            "选择多个 C 文件",
-            "",
-            "C source (*.c);;All files (*.*)",
-        )
-        self._add_files_to_list([Path(name) for name in filenames])
-
-    def _select_batch_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "选择包含 C 文件的文件夹", "")
-        if not folder:
-            return
-        self._add_files_to_list(sorted(Path(folder).glob("*.c")))
+        if filenames:
+            self._add_files_to_list([Path(name) for name in filenames])
 
     def _add_files_to_list(self, paths: list[Path]) -> None:
         existing = {path.resolve() for path in self._get_all_listed_files()}
@@ -341,14 +363,15 @@ class MainWindow(QMainWindow):
         self._current_upload_path = file_path
         self.file_path_edit.setText(str(file_path))
         self._execution_separator_pending = True
-        self._pending_echo_lines = source_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-        self._append_uploaded_source(file_path, source_text)
         if self._batch_active:
-            tested = len(self._batch_results) + 1
+            tested = len(self._batch_results)
             total = len(self._batch_results) + len(self._batch_queue) + 1
-            self._append_info_line(f"开始测试 [{tested}/{total}]: {file_path.name}")
+            self._append_separator_line(f"测试 [{tested}/{total}]: {file_path.name}")
         else:
-            self._append_info_line(f"正在上传文件: {file_path}")
+            self._append_separator_line(f"上传: {file_path.name}")
+        total_bytes = sum(len(line) + 1 for line in source_text.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+        if total_bytes <= 8191:
+            self._append_uploaded_source(file_path, source_text)
 
         if not self._session.start_upload(source_text):
             self._execution_separator_pending = False
@@ -399,12 +422,12 @@ class MainWindow(QMainWindow):
         self._session.set_connected(connected)
         if connected:
             self._append_info_line(f"已连接到 {port_name}")
+            QTimer.singleShot(800, lambda: self._session.send_ping())
         else:
             self._append_info_line("已断开连接。")
             self._execution_separator_pending = False
             self._batch_active = False
             self._batch_queue.clear()
-            self._pending_echo_lines = []
             self._single_step_mode = False
         self._update_ui_state()
 
@@ -415,12 +438,10 @@ class MainWindow(QMainWindow):
     def _handle_upload_finished(self, success: bool, message: str) -> None:
         self._append_info_line(message)
         self._execution_separator_pending = False
-        self._pending_echo_lines = []
+        self.debug_info_label.setText("调试未激活")
 
         if self._batch_active and self._current_upload_path is not None:
             self._batch_results.append((self._current_upload_path, success, message))
-            result_text = "通过" if success else "失败"
-            self._append_info_line(f"测试结果: {self._current_upload_path.name} -> {result_text}")
             self._continue_batch_or_finish()
         else:
             if not success and "超时" in message:
@@ -440,10 +461,10 @@ class MainWindow(QMainWindow):
         passed = sum(1 for _, success, _ in self._batch_results if success)
         failed = len(self._batch_results) - passed
         self._append_separator_line("批量测试结束")
-        self._append_info_line(f"总计 {len(self._batch_results)} 个文件，通过 {passed}，失败 {failed}。")
+        self._append_info_line(f"总计 {len(self._batch_results)} 执行完成 {passed} 执行错误 {failed}")
         for path, success, message in self._batch_results:
             result_text = "PASS" if success else "FAIL"
-            self._append_info_line(f"{result_text} {path.name} - {message}")
+            self._append_info_line(f"  {result_text}  {path.name}  ({message})")
         self._batch_active = False
         self._current_upload_path = None
         self._single_step_mode = False
@@ -464,8 +485,52 @@ class MainWindow(QMainWindow):
         self._upload_active = active
         if not active:
             self._execution_separator_pending = False
-            self._pending_echo_lines = []
+            self.debug_info_label.setText("调试未激活")
         self._update_ui_state()
+
+    def _on_debug_break(self, filename: str, line_no: int) -> None:
+        self.debug_info_label.setText(f"已中断: 第{line_no}行")
+        self._update_ui_state()
+
+    def _on_debug_resumed(self) -> None:
+        self.debug_info_label.setText("调试未激活")
+        self._update_ui_state()
+
+    def _on_eval_clicked(self) -> None:
+        expr = self.debug_eval_input.text().strip()
+        if not expr:
+            return
+        if self._session.send_debug_eval(expr):
+            self.debug_eval_input.clear()
+
+    @staticmethod
+    def _bp_filename() -> str:
+        return "serial_load"
+
+    def _read_bp_params(self) -> tuple[str, int] | None:
+        try:
+            line = int(self.debug_bp_line.text().strip())
+        except ValueError:
+            self._show_warning("断点", "请输入有效的行号。")
+            return None
+        if line <= 0:
+            self._show_warning("断点", "行号必须大于 0。")
+            return None
+        return self._bp_filename(), line
+
+    def _on_bp_set_clicked(self) -> None:
+        params = self._read_bp_params()
+        if params is None:
+            return
+        filename, line = params
+        self._session.send_breakpoint_set(filename, line)
+
+    def _on_bp_clear_clicked(self) -> None:
+        params = self._read_bp_params()
+        if params is None:
+            return
+        filename, line = params
+        self._session.send_breakpoint_clear(filename, line)
 
     def _handle_error(self, message: str) -> None:
         self._append_info_line(message)
@@ -482,6 +547,7 @@ class MainWindow(QMainWindow):
     def _update_ui_state(self) -> None:
         connected = self._serial_manager.is_connected()
         busy = self._session.mode == "BUSY"
+        debug_active = self._session._debug_active
         has_files = self.file_list.count() > 0
         has_selection = self.file_list.currentItem() is not None or bool(self.file_path_edit.text().strip())
 
@@ -491,12 +557,10 @@ class MainWindow(QMainWindow):
         self.port_combo.setEnabled(not connected)
         self.baud_combo.setEnabled(not connected)
 
-        self.manual_input.setEnabled(connected and not busy)
-        self.send_button.setEnabled(connected and not busy)
+        self.manual_input.setEnabled(connected and not busy and not debug_active)
+        self.send_button.setEnabled(connected and not busy and not debug_active)
 
         self.browse_button.setEnabled(connected and not busy)
-        self.batch_files_button.setEnabled(connected and not busy)
-        self.batch_folder_button.setEnabled(connected and not busy)
         self.clear_list_button.setEnabled(not busy and has_files)
         self.file_list.setEnabled(not busy)
         self.file_path_edit.setEnabled(not busy)
@@ -506,6 +570,14 @@ class MainWindow(QMainWindow):
         self.abort_button.setEnabled(connected)
         self.save_button.setEnabled(True)
         self.clear_button.setEnabled(True)
+
+        self.debug_continue_btn.setEnabled(debug_active)
+        self.debug_step_btn.setEnabled(debug_active)
+        self.debug_eval_input.setEnabled(debug_active)
+        self.debug_eval_btn.setEnabled(debug_active)
+        self.debug_bp_line.setEnabled(connected and not busy)
+        self.debug_bp_set_btn.setEnabled(connected and not busy)
+        self.debug_bp_clear_btn.setEnabled(connected and not busy)
 
     def _append_console_text(self, text: str) -> None:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -531,8 +603,6 @@ class MainWindow(QMainWindow):
 
     def _append_remote_line(self, line: str) -> None:
         if self._should_filter_control_echo(line):
-            return
-        if self._should_filter_upload_line(line):
             return
 
         lowered = line.lower()
@@ -565,29 +635,28 @@ class MainWindow(QMainWindow):
         self.console_view.clear()
         self._console_line_buffer = ""
         self._execution_separator_pending = False
-        self._pending_echo_lines = []
-
-    def _should_filter_upload_line(self, line: str) -> bool:
-        if not self._upload_active:
-            return False
-
-        if self._pending_echo_lines and line == self._pending_echo_lines[0]:
-            self._pending_echo_lines.pop(0)
-            return True
-
-        stripped = line.strip()
-        if stripped == "":
-            return True
-        if stripped == "load>":
-            return True
-        if line.startswith("load> "):
-            return True
-        return False
 
     @staticmethod
     def _should_filter_control_echo(line: str) -> bool:
         stripped = line.strip()
-        return stripped in {":load", ":end"}
+        if stripped in {":end", ":abort", ":ping", ":reset", ":pong", ":ok", ":ok ready",
+                        ":ok eval", ":ok bkpt", ":ok bkptclear", "load>"}:
+            return True
+        if stripped.startswith(":load") or stripped.startswith(":err"):
+            return True
+        if stripped.startswith(":break") or stripped.startswith(":step"):
+            return True
+        if stripped in {":cont", ":step"}:
+            return True
+        if stripped.startswith(":eval "):
+            return True
+        if stripped.startswith(":bkpt ") or stripped.startswith(":bkptclear "):
+            return True
+        if stripped == ":result" or stripped == ":ok":
+            return True
+        if line.startswith("load> "):
+            return True
+        return False
 
     def _show_warning(self, title: str, message: str) -> None:
         QMessageBox.warning(self, title, message)

@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 class UploadPhase(Enum):
     IDLE = auto()
-    WAIT_LOAD_PROMPT = auto()
+    WAIT_LOAD_ACK = auto()
     SENDING_LINES = auto()
     WAIT_EXEC_COMPLETE = auto()
     FINISHED = auto()
@@ -24,6 +24,7 @@ class UploadJob(QObject):
         self._lines = normalized.split("\n")
         self._line_index = 0
         self._phase = UploadPhase.IDLE
+        self.error_type: str | None = None
         self._timeout_timer = QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._handle_timeout)
@@ -36,34 +37,57 @@ class UploadJob(QObject):
         return self._phase
 
     def start(self, current_mode: str) -> None:
-        if current_mode == "LOAD":
-            self._progress("正在发送文件...")
-            self._phase = UploadPhase.SENDING_LINES
-            self._send_timer.start(0)
-        else:
-            self._progress("正在请求进入文件模式...")
-            self._phase = UploadPhase.WAIT_LOAD_PROMPT
-            self.send_requested.emit(":load\r\n")
-            self._timeout_timer.start(4000)
+        total_bytes = self._compute_total_bytes()
+        self._progress(f"正在请求上传 ({total_bytes} 字节)...")
+        self._phase = UploadPhase.WAIT_LOAD_ACK
+        self.send_requested.emit(f":load {total_bytes}\r\n")
+        self._timeout_timer.start(4000)
+
+    def handle_response(self, prefix: str, data: str) -> None:
+        if self._phase == UploadPhase.WAIT_LOAD_ACK:
+            if prefix == ":ok":
+                self._timeout_timer.stop()
+                self._progress("设备已接受，开始发送文件...")
+                self._phase = UploadPhase.SENDING_LINES
+                self._send_timer.start(0)
+            elif prefix == ":err":
+                self._finish(False, "文件过大，跳过")
+        elif self._phase == UploadPhase.SENDING_LINES:
+            if prefix == ":err":
+                self._finish(False, "执行错误")
+        elif self._phase == UploadPhase.WAIT_EXEC_COMPLETE:
+            if prefix == ":ok" and data == "ready":
+                if self.error_type is not None:
+                    self._finish(False, self.error_type)
+                else:
+                    self._finish(True, "执行完成")
+            elif prefix == ":err":
+                self._finish(False, "执行错误")
 
     def observe_mode(self, mode: str) -> None:
-        if self._phase == UploadPhase.WAIT_LOAD_PROMPT and mode == "LOAD":
-            self._timeout_timer.stop()
-            self._progress("文件模式就绪，开始发送文件...")
-            self._phase = UploadPhase.SENDING_LINES
-            self._send_timer.start(0)
-            return
-
-        if self._phase == UploadPhase.WAIT_EXEC_COMPLETE and mode == "REPL":
-            self._finish(True, "上传完成。")
+        if self._phase == UploadPhase.SENDING_LINES and mode == "REPL":
+            self._finish(False, "通信异常")
 
     def observe_ready_for_next_file(self) -> None:
         if self._phase == UploadPhase.WAIT_EXEC_COMPLETE:
-            self._finish(True, "上传完成。")
+            self._finish(True, "执行完成")
+
+    def debug_pause(self) -> None:
+        """Pause timeout timer when debugger hits a breakpoint."""
+        if self._phase == UploadPhase.WAIT_EXEC_COMPLETE:
+            self._timeout_timer.stop()
+
+    def debug_resume(self) -> None:
+        """Resume timeout timer after debug continue/step."""
+        if self._phase == UploadPhase.WAIT_EXEC_COMPLETE:
+            self._timeout_timer.start(120000)
 
     def cancel(self) -> None:
         if self._phase != UploadPhase.FINISHED:
-            self._finish(False, "上传已取消。")
+            self._finish(False, "已取消")
+
+    def _compute_total_bytes(self) -> int:
+        return sum(len(line) + 1 for line in self._lines)
 
     def _send_next_line(self) -> None:
         if self._phase != UploadPhase.SENDING_LINES:
@@ -78,10 +102,10 @@ class UploadJob(QObject):
         self._phase = UploadPhase.WAIT_EXEC_COMPLETE
         self._progress("正在执行文件...")
         self.send_requested.emit(":end\r\n")
-        self._timeout_timer.start(15000)
+        self._timeout_timer.start(120000)
 
     def _handle_timeout(self) -> None:
-        self._finish(False, "操作超时。")
+        self._finish(False, "超时")
 
     def _finish(self, success: bool, message: str) -> None:
         self._timeout_timer.stop()

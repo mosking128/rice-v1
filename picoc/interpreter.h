@@ -594,6 +594,7 @@ void LexFail(Picoc *pc, struct LexState *Lexer, const char *Message, ...);
 void PlatformInit(Picoc *pc);
 void PlatformCleanup(Picoc *pc);
 char *PlatformGetLine(char *Buf, int MaxLen, const char *Prompt);
+char *PlatformGetLineQuiet(char *Buf, int MaxLen);
 int PlatformGetCharacter(void);
 void PlatformPutc(unsigned char OutCh, union OutputStreamInfo *);
 void PlatformPrintf(IOFILE *Stream, const char *Format, ...);
@@ -614,6 +615,11 @@ void IncludeFile(Picoc *pc, char *Filename);
 void DebugInit(Picoc *pc);
 void DebugCleanup(Picoc *pc);
 void DebugCheckStatement(struct ParseState *Parser);
+void DebugSetBreakpoint(struct ParseState *Parser);
+int DebugClearBreakpoint(struct ParseState *Parser);
+void DebugCopyBreakpoints(Picoc *src, Picoc *dest);
+void DebugCancelStep(void);
+void DebugClearAllBreakpoints(Picoc *pc);
 
 
 /* stdio.c */

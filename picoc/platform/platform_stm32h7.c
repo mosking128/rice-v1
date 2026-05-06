@@ -5,6 +5,36 @@
 
 static void PlatformWriteString(const char *text);
 
+char *PlatformGetLineQuiet(char *Buf, int MaxLen)
+{
+    int len = 0;
+
+    if (Buf == NULL || MaxLen <= 1)
+        return NULL;
+
+    for (;;)
+    {
+        int ch = PicocApp_ConsoleGetCharBlocking();
+
+        if (ch == '\r' || ch == '\n')
+        {
+            Buf[len++] = '\n';
+            Buf[len] = '\0';
+            return Buf;
+        }
+
+        if (ch == '\b' || ch == 0x7f)
+        {
+            if (len > 0)
+                len--;
+            continue;
+        }
+
+        if (len < MaxLen - 2)
+            Buf[len++] = (char)ch;
+    }
+}
+
 void PlatformInit(Picoc *pc)
 {
     (void)pc;
