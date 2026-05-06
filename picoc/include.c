@@ -10,16 +10,20 @@
 /* initialise the built-in include libraries */
 void IncludeInit(Picoc *pc)
 {
-#ifndef BUILTIN_MINI_STDLIB
     IncludeRegister(pc, "ctype.h", NULL, &StdCtypeFunctions[0], NULL);
+#ifndef BUILTIN_MINI_STDLIB
     IncludeRegister(pc, "errno.h", &StdErrnoSetupFunc, NULL, NULL);
+#endif
 # ifndef NO_FP
     IncludeRegister(pc, "math.h", &MathSetupFunc, &MathFunctions[0], NULL);
 # endif
     IncludeRegister(pc, "stdbool.h", &StdboolSetupFunc, NULL, StdboolDefs);
+#ifndef BUILTIN_MINI_STDLIB
     IncludeRegister(pc, "stdio.h", &StdioSetupFunc, &StdioFunctions[0], StdioDefs);
+#endif
     IncludeRegister(pc, "stdlib.h", &StdlibSetupFunc, &StdlibFunctions[0], NULL);
     IncludeRegister(pc, "string.h", &StringSetupFunc, &StringFunctions[0], NULL);
+#ifndef BUILTIN_MINI_STDLIB
     IncludeRegister(pc, "time.h", &StdTimeSetupFunc, &StdTimeFunctions[0], StdTimeDefs);
 # ifndef WIN32
     IncludeRegister(pc, "unistd.h", &UnistdSetupFunc, &UnistdFunctions[0], UnistdDefs);

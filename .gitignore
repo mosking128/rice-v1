@@ -4,6 +4,9 @@ Desktop.ini
 *.tmp
 *.temp
 *.log
+.claude/
+CLAUDE.md
+测试文件1/
 
 # Python
 __pycache__/

@@ -1,6 +1,6 @@
 # PicoC on STM32H750
 
-本项目将 PicoC 移植到 STM32H750，在 `USART1` 上提供交互式 REPL、整文件上传执行和 Windows 上位机工具，目标是用尽量小的代价跑通 MCU 侧 C 脚本解释工作流。提供新的picoc嵌入式移植思路。
+本项目将 PicoC 移植到 STM32H750，在 `USART1` 上提供交互式 REPL、整文件上传执行和 Windows 上位机工具，目标是用尽量小的代价跑通 MCU 侧 C 脚本解释工作流，并沉淀一套可复用的 PicoC 嵌入式移植思路。
 
 This project ports PicoC to STM32H750 and provides a `USART1`-based REPL, whole-file source upload/execution, and a Windows host tool for a practical embedded C scripting workflow.
 
@@ -33,9 +33,16 @@ The debug toolbar is always visible at the bottom of the host tool window.
 2. Enter a line number (e.g. `5`) and click `设断点` — the console shows `设置断点: 第5行`.
 3. Upload a `.c` file and execute it.
 4. Execution pauses at the breakpoint — the toolbar label shows `已中断: 第5行`.
-5. Click `单步` to step line by line, or enter an expression like `x + 1` and click `求值`.
+5. Click `单步` to step statement by statement, or enter an expression like `x + 1` and click `求值`.
 6. Click `继续` to resume until the next breakpoint or file end.
 7. Breakpoints are automatically cleared after each file execution.
+
+### Current Limits
+
+- Debugging currently targets uploaded source executed as `serial_load`.
+- Breakpoint line numbers refer to the uploaded file content, not REPL history.
+- `:eval` currently wraps the expression with `printf("%d\\n", (...))`, so integer-like expressions are the safest choice.
+- Breakpoints are copied into the isolated file-run instance and cleared after that run finishes.
 
 ### Debug Protocol
 
@@ -59,6 +66,7 @@ The host and device communicate via structured UART protocol extensions:
 - [tools/picoc_host/src](tools/picoc_host/src): host tool source code
 - [tools/picoc_host/src/README.md](tools/picoc_host/src/README.md): host tool usage
 - [docs/移植流程.md](docs/%E7%A7%BB%E6%A4%8D%E6%B5%81%E7%A8%8B.md): porting workflow notes
+- [docs/调试使用说明.md](docs/%E8%B0%83%E8%AF%95%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.md): breakpoint and single-step guide
 
 ## Current Scope
 

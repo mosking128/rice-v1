@@ -2,8 +2,6 @@
 #include <ctype.h>
 #include "../interpreter.h"
 
-#ifndef BUILTIN_MINI_STDLIB
-
 void StdIsalnum(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = isalnum(Param[0]->Val->Integer);
@@ -77,12 +75,13 @@ void StdToupper(struct ParseState *Parser, struct Value *ReturnValue, struct Val
 
 void StdIsascii(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Integer = isascii(Param[0]->Val->Integer);
+    int c = Param[0]->Val->Integer;
+    ReturnValue->Val->Integer = (c >= 0 && c <= 127);
 }
 
 void StdToascii(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Integer = toascii(Param[0]->Val->Integer);
+    ReturnValue->Val->Integer = Param[0]->Val->Integer & 0x7F;
 }
 
 /* all string.h functions */
@@ -106,5 +105,3 @@ struct LibraryFunction StdCtypeFunctions[] =
     { StdToascii,      "int toascii(int);" },
     { NULL,             NULL }
 };
-
-#endif /* !BUILTIN_MINI_STDLIB */

@@ -190,7 +190,7 @@
             <hadIRAM2>1</hadIRAM2>
             <hadIROM2>0</hadIROM2>
             <StupSel>8</StupSel>
-            <useUlib>0</useUlib>
+            <useUlib>1</useUlib>
             <EndSel>0</EndSel>
             <uLtcg>0</uLtcg>
             <nSecure>0</nSecure>
@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>USE_PWR_LDO_SUPPLY,USE_HAL_DRIVER,STM32H750xx,STM32H750_HOST</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32H7xx/Include;../Drivers/CMSIS/Include;../picoc;../picoc/platform</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32H7xx/Include;../Drivers/CMSIS/Include;../picoc;../picoc/platform;..\picoc\cstdlib</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -877,6 +877,56 @@
           </Files>
         </Group>
         <Group>
+          <GroupName>Picoc/cstdlib</GroupName>
+          <Files>
+            <File>
+              <FileName>ctype.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\picoc\cstdlib\ctype.c</FilePath>
+            </File>
+            <File>
+              <FileName>errno.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\picoc\cstdlib\errno.c</FilePath>
+            </File>
+            <File>
+              <FileName>math.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\picoc\cstdlib\math.c</FilePath>
+            </File>
+            <File>
+              <FileName>stdbool.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\picoc\cstdlib\stdbool.c</FilePath>
+            </File>
+            <File>
+              <FileName>stdio.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\picoc\cstdlib\stdio.c</FilePath>
+            </File>
+            <File>
+              <FileName>stdlib.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\picoc\cstdlib\stdlib.c</FilePath>
+            </File>
+            <File>
+              <FileName>string.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\picoc\cstdlib\string.c</FilePath>
+            </File>
+            <File>
+              <FileName>time.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\picoc\cstdlib\time.c</FilePath>
+            </File>
+            <File>
+              <FileName>unistd.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\picoc\cstdlib\unistd.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
           <GroupName>::CMSIS</GroupName>
         </Group>
       </Groups>
@@ -895,5 +945,14 @@
     </components>
     <files/>
   </RTE>
+
+  <LayerInfo>
+    <Layers>
+      <Layer>
+        <LayName>UART_DMA_H750</LayName>
+        <LayPrjMark>1</LayPrjMark>
+      </Layer>
+    </Layers>
+  </LayerInfo>
 
 </Project>

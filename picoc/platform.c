@@ -25,6 +25,7 @@ void PicocInitialise(Picoc *pc, int StackSize)
     CLibraryInit(pc);
 #endif
     PlatformLibraryInit(pc);
+    PicocIncludeAllSystemHeaders(pc);
     DebugInit(pc);
 }
 

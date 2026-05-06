@@ -1,8 +1,6 @@
 /* string.h library for large systems - small embedded systems use clibrary.c instead */
 #include "../interpreter.h"
 
-#ifndef BUILTIN_MINI_STDLIB
-
 static int String_ZeroValue = 0;
 
 void StringStrcpy(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
@@ -38,12 +36,12 @@ void StringStrncat(struct ParseState *Parser, struct Value *ReturnValue, struct 
 #ifndef WIN32
 void StringIndex(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Pointer = index(Param[0]->Val->Pointer, Param[1]->Val->Integer);
+    ReturnValue->Val->Pointer = strchr(Param[0]->Val->Pointer, Param[1]->Val->Integer);
 }
 
 void StringRindex(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Pointer = rindex(Param[0]->Val->Pointer, Param[1]->Val->Integer);
+    ReturnValue->Val->Pointer = strrchr(Param[0]->Val->Pointer, Param[1]->Val->Integer);
 }
 #endif
 
@@ -130,7 +128,11 @@ void StringStrxfrm(struct ParseState *Parser, struct Value *ReturnValue, struct 
 #ifndef WIN32
 void StringStrdup(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Pointer = strdup(Param[0]->Val->Pointer);
+    char *s = (char *)Param[0]->Val->Pointer;
+    size_t len = strlen(s) + 1;
+    char *p = (char *)malloc(len);
+    if (p) memcpy(p, s, len);
+    ReturnValue->Val->Pointer = p;
 }
 
 void StringStrtok_r(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
@@ -182,5 +184,3 @@ void StringSetupFunc(Picoc *pc)
     if (!VariableDefined(pc, TableStrRegister(pc, "NULL")))
         VariableDefinePlatformVar(pc, NULL, "NULL", &pc->IntType, (union AnyValue *)&String_ZeroValue, FALSE);
 }
-
-#endif /* !BUILTIN_MINI_STDLIB */

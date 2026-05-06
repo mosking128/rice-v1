@@ -1,8 +1,6 @@
 /* stdlib.h library for large systems - small embedded systems use clibrary.c instead */
 #include "../interpreter.h"
 
-#ifndef BUILTIN_MINI_STDLIB
-
 static int Stdlib_ZeroValue = 0;
 
 #ifndef NO_FP
@@ -81,12 +79,12 @@ void StdlibExit(struct ParseState *Parser, struct Value *ReturnValue, struct Val
 
 void StdlibGetenv(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Pointer = getenv(Param[0]->Val->Pointer);
+    ReturnValue->Val->Pointer = NULL;
 }
 
 void StdlibSystem(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Integer = system(Param[0]->Val->Pointer);
+    ReturnValue->Val->Integer = -1;
 }
 
 #if 0
@@ -170,5 +168,3 @@ void StdlibSetupFunc(Picoc *pc)
     if (!VariableDefined(pc, TableStrRegister(pc, "NULL")))
         VariableDefinePlatformVar(pc, NULL, "NULL", &pc->IntType, (union AnyValue *)&Stdlib_ZeroValue, FALSE);
 }
-
-#endif /* !BUILTIN_MINI_STDLIB */

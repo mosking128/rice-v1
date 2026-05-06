@@ -135,7 +135,15 @@ struct Value *ParseFunctionDefinition(struct ParseState *Parser, struct ValueTyp
     /* look for a function body */
     Token = LexGetToken(Parser, NULL, FALSE);
     if (Token == TokenSemicolon)
+    {
         LexGetToken(Parser, NULL, TRUE);    /* it's a prototype, absorb the trailing semicolon */
+        if (TableGet(&pc->GlobalTable, Identifier, NULL, NULL, NULL, NULL))
+        {
+            /* already defined, accept redeclaration */
+            VariableFree(pc, FuncValue);
+            return NULL;
+        }
+    }
     else
     {
         /* it's a full function definition with a body */
