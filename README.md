@@ -9,8 +9,47 @@ This project ports PicoC to STM32H750 and provides a `USART1`-based REPL, whole-
 - Interactive PicoC REPL over `USART1`
 - File upload mode with `:load / :end / :abort`
 - Multi-line source input and whole-file execution
+- **Interactive debugger**: breakpoints, single-step, expression evaluation
 - STM32H750 Keil MDK project ready for flashing
-- Windows host tool for serial console, file upload, and batch testing
+- Windows host tool for serial console, file upload, batch testing, and debugging
+
+## Debugger
+
+The host tool provides an interactive debugger with breakpoint, single-step, and expression evaluation support.
+
+### Debug Toolbar
+
+The debug toolbar is always visible at the bottom of the host tool window.
+
+| Section | Controls | Description |
+|---------|----------|-------------|
+| Breakpoint | `行号` input + `设断点` / `清断点` | Set or clear a line breakpoint before uploading |
+| Execution | `继续` / `单步` | Continue execution or step one statement |
+| Expression | `表达式` input + `求值` | Evaluate a C expression in the current scope |
+
+### Workflow
+
+1. Connect the board and wait for `picoc> `.
+2. Enter a line number (e.g. `5`) and click `设断点` — the console shows `设置断点: 第5行`.
+3. Upload a `.c` file and execute it.
+4. Execution pauses at the breakpoint — the toolbar label shows `已中断: 第5行`.
+5. Click `单步` to step line by line, or enter an expression like `x + 1` and click `求值`.
+6. Click `继续` to resume until the next breakpoint or file end.
+7. Breakpoints are automatically cleared after each file execution.
+
+### Debug Protocol
+
+The host and device communicate via structured UART protocol extensions:
+
+| Direction | Command | Description |
+|-----------|---------|-------------|
+| Host → Device | `:bkpt <file> <line>` | Set breakpoint |
+| Host → Device | `:bkptclear <file> <line>` | Clear breakpoint |
+| Host → Device | `:cont` | Continue execution |
+| Host → Device | `:step` | Single-step one statement |
+| Host → Device | `:eval <expr>` | Evaluate expression |
+| Device → Host | `:break <file> <line> <col>` | Breakpoint hit notification |
+| Device → Host | `:step <file> <line> <col>` | Step break notification |
 
 ## Repository Layout
 
@@ -51,11 +90,19 @@ Packaged mode:
 
 ## Typical Workflow
 
+### File Upload & Execution
+
 1. Connect the board and open the host tool.
 2. Wait for `picoc> `.
-3. For single-line interaction, send expressions or statements directly.
-4. For whole-file execution, enter `:load`, send C source, then send `:end`.
-5. After execution, the target stays in load mode and prints `ready for next file`.
+3. Add `.c` files to the list, select one, and click `执行选中`.
+4. Source code is uploaded, executed, and results appear in the console.
+
+### Debugging
+
+1. Connect and set a breakpoint by entering a line number and clicking `设断点`.
+2. Upload and execute a file — execution pauses at the breakpoint.
+3. Use `单步`, `求值`, and `继续` to inspect program state.
+4. Breakpoints are cleared automatically after each run.
 
 ## Notes
 
