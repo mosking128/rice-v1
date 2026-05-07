@@ -1,4 +1,13 @@
-/* picoc lexer - converts source text into a tokenised form */ 
+/* PicoC 词法分析器 (Lexer / Tokenizer)
+ *
+ * 将 C 源代码文本转换为 Token 序列，供解析器使用。
+ * 识别：关键字、标识符、整数/浮点常量、字符串/字符常量（含转义）、运算符。
+ * 同时处理预处理指令：#define、#include、#ifdef、#ifndef、#if、#else、#endif。
+ *
+ * 入口函数：
+ *   LexAnalyse() — 分析一段源代码文本，返回 token 序列
+ *   LexGetToken() — 解析器每次取一个 token（含预处理）
+ */
 
 #include "interpreter.h"
 
@@ -15,6 +24,7 @@
 #define IS_BASE_DIGIT(c,b) (((c) >= '0' && (c) < '0' + (((b)<10)?(b):10)) || (((b) > 10) ? IS_HEX_ALPHA_DIGIT(c) : FALSE))
 #define GET_BASE_DIGIT(c) (((c) <= '9') ? ((c) - '0') : (((c) <= 'F') ? ((c) - 'A' + 10) : ((c) - 'a' + 10)))
 
+/* 多字符运算符的便捷宏：根据下一个字符选择对应的 token */
 #define NEXTIS(c,x,y) { if (NextChar == (c)) { LEXER_INC(Lexer); GotToken = (x); } else GotToken = (y); }
 #define NEXTIS3(c,x,d,y,z) { if (NextChar == (c)) { LEXER_INC(Lexer); GotToken = (x); } else NEXTIS(d,y,z) }
 #define NEXTIS4(c,x,d,y,e,z,a) { if (NextChar == (c)) { LEXER_INC(Lexer); GotToken = (x); } else NEXTIS3(d,y,e,z,a) }
@@ -25,15 +35,17 @@
 #define LEXER_INCN(l, n) ( (l)->Pos+=(n), (l)->CharacterPos+=(n) )
 #define TOKEN_DATA_OFFSET 2
 
-#define MAX_CHAR_VALUE 255      /* maximum value which can be represented by a "char" data type */
+#define MAX_CHAR_VALUE 255      /* "char" 类型能表示的最大值 */
 
 
+/* 保留字结构体 */
 struct ReservedWord
 {
     const char *Word;
     enum LexToken Token;
 };
 
+/* 关键字/保留字表 —— 包含所有 C 关键字和预处理指令 */
 static struct ReservedWord ReservedWords[] =
 {
     { "#define", TokenHashDefine },
@@ -83,18 +95,18 @@ static struct ReservedWord ReservedWords[] =
 
 
 
-/* initialise the lexer */
+/* 初始化词法分析器：将保留字表填入哈希表 */
 void LexInit(Picoc *pc)
 {
     int Count;
-    
+
     TableInitTable(&pc->ReservedWordTable, &pc->ReservedWordHashTable[0], sizeof(ReservedWords) / sizeof(struct ReservedWord) * 2, TRUE);
 
     for (Count = 0; Count < sizeof(ReservedWords) / sizeof(struct ReservedWord); Count++)
     {
         TableSet(pc, &pc->ReservedWordTable, TableStrRegister(pc, ReservedWords[Count].Word), (struct Value *)&ReservedWords[Count], NULL, 0, 0);
     }
-    
+
     pc->LexValue.Typ = NULL;
     pc->LexValue.Val = &pc->LexAnyValue;
     pc->LexValue.LValueFrom = FALSE;
@@ -104,7 +116,7 @@ void LexInit(Picoc *pc)
     pc->LexValue.IsLValue = FALSE;
 }
 
-/* deallocate */
+/* 清理词法分析器：清除交互输入和保留字表 */
 void LexCleanup(Picoc *pc)
 {
     int Count;
@@ -115,18 +127,19 @@ void LexCleanup(Picoc *pc)
         TableDelete(pc, &pc->ReservedWordTable, TableStrRegister(pc, ReservedWords[Count].Word));
 }
 
-/* check if a word is a reserved word - used while scanning */
+/* 检查一个标识符是否为保留字，是则返回对应 token */
 enum LexToken LexCheckReservedWord(Picoc *pc, const char *Word)
 {
     struct Value *val;
-    
+
     if (TableGet(&pc->ReservedWordTable, Word, &val, NULL, NULL, NULL))
         return ((struct ReservedWord *)val)->Token;
     else
         return TokenNone;
 }
 
-/* get a numeric literal - used while scanning */
+/* 解析数字字面量：支持十进制、十六进制 (0x)、八进制 (0)、二进制 (0b)，
+ * 支持浮点数（含小数点和科学计数法 e/E），以及 u/l 后缀 */
 enum LexToken LexGetNumber(Picoc *pc, struct LexState *Lexer, struct Value *Value)
 {
     long Result = 0;
@@ -141,10 +154,10 @@ enum LexToken LexGetNumber(Picoc *pc, struct LexState *Lexer, struct Value *Valu
     char IsLong = 0;
     char IsUnsigned = 0;
 #endif
-    
+
     if (*Lexer->Pos == '0')
-    { 
-        /* a binary, octal or hex literal */
+    {
+        /* 二进制、八进制或十六进制字面量 */
         LEXER_INC(Lexer);
         if (Lexer->Pos != Lexer->End)
         {
@@ -157,7 +170,7 @@ enum LexToken LexGetNumber(Picoc *pc, struct LexState *Lexer, struct Value *Valu
         }
     }
 
-    /* get the value */
+    /* 读取数值部分 */
     for (; Lexer->Pos != Lexer->End && IS_BASE_DIGIT(*Lexer->Pos, Base); LEXER_INC(Lexer))
         Result = Result * Base + GET_BASE_DIGIT(*Lexer->Pos);
 
@@ -171,29 +184,29 @@ enum LexToken LexGetNumber(Picoc *pc, struct LexState *Lexer, struct Value *Valu
         LEXER_INC(Lexer);
         /* IsLong = 1; */
     }
-    
+
     Value->Typ = &pc->LongType; /* ignored? */
     Value->Val->LongInteger = Result;
 
     ResultToken = TokenIntegerConstant;
-    
+
     if (Lexer->Pos == Lexer->End)
         return ResultToken;
-        
+
 #ifndef NO_FP
     if (Lexer->Pos == Lexer->End)
     {
         return ResultToken;
     }
-    
+
     if (*Lexer->Pos != '.' && *Lexer->Pos != 'e' && *Lexer->Pos != 'E')
     {
         return ResultToken;
     }
-    
+
     Value->Typ = &pc->FPType;
     FPResult = (double)Result;
-    
+
     if (*Lexer->Pos == '.')
     {
         LEXER_INC(Lexer);
@@ -206,14 +219,14 @@ enum LexToken LexGetNumber(Picoc *pc, struct LexState *Lexer, struct Value *Valu
     if (Lexer->Pos != Lexer->End && (*Lexer->Pos == 'e' || *Lexer->Pos == 'E'))
     {
         int ExponentSign = 1;
-        
+
         LEXER_INC(Lexer);
         if (Lexer->Pos != Lexer->End && *Lexer->Pos == '-')
         {
             ExponentSign = -1;
             LEXER_INC(Lexer);
         }
-        
+
         Result = 0;
         while (Lexer->Pos != Lexer->End && IS_BASE_DIGIT(*Lexer->Pos, Base))
         {
@@ -223,7 +236,7 @@ enum LexToken LexGetNumber(Picoc *pc, struct LexState *Lexer, struct Value *Valu
 
         FPResult *= pow((double)Base, (double)Result * ExponentSign);
     }
-    
+
     Value->Val->FP = FPResult;
 
     if (*Lexer->Pos == 'f' || *Lexer->Pos == 'F')
@@ -235,19 +248,19 @@ enum LexToken LexGetNumber(Picoc *pc, struct LexState *Lexer, struct Value *Valu
 #endif
 }
 
-/* get a reserved word or identifier - used while scanning */
+/* 解析标识符或保留字：读取 C 标识符，查保留字表判断类型 */
 enum LexToken LexGetWord(Picoc *pc, struct LexState *Lexer, struct Value *Value)
 {
     const char *StartPos = Lexer->Pos;
     enum LexToken Token;
-    
+
     do {
         LEXER_INC(Lexer);
     } while (Lexer->Pos != Lexer->End && isCident((int)*Lexer->Pos));
-    
+
     Value->Typ = NULL;
     Value->Val->Identifier = TableStrRegister2(pc, StartPos, Lexer->Pos - StartPos);
-    
+
     Token = LexCheckReservedWord(pc, Value->Val->Identifier);
     switch (Token)
     {
@@ -255,54 +268,54 @@ enum LexToken LexGetWord(Picoc *pc, struct LexState *Lexer, struct Value *Value)
         case TokenHashDefine: Lexer->Mode = LexModeHashDefine; break;
         default: break;
     }
-        
+
     if (Token != TokenNone)
         return Token;
-    
+
     if (Lexer->Mode == LexModeHashDefineSpace)
         Lexer->Mode = LexModeHashDefineSpaceIdent;
-    
+
     return TokenIdentifier;
 }
 
-/* unescape a character from an octal character constant */
+/* 从八进制的转义序列中解析字符值 */
 unsigned char LexUnEscapeCharacterConstant(const char **From, const char *End, unsigned char FirstChar, int Base)
 {
     unsigned char Total = GET_BASE_DIGIT(FirstChar);
     int CCount;
     for (CCount = 0; IS_BASE_DIGIT(**From, Base) && CCount < 2; CCount++, (*From)++)
         Total = Total * Base + GET_BASE_DIGIT(**From);
-    
+
     return Total;
 }
 
-/* unescape a character from a string or character constant */
+/* 从字符串或字符常量中解析转义字符（支持 \n、\t、\\、\xHH、\OOO 等） */
 unsigned char LexUnEscapeCharacter(const char **From, const char *End)
 {
     unsigned char ThisChar;
-    
-    while ( *From != End && **From == '\\' && 
+
+    while ( *From != End && **From == '\\' &&
             &(*From)[1] != End && (*From)[1] == '\n' )
-        (*From) += 2;       /* skip escaped end of lines with LF line termination */
-    
-    while ( *From != End && **From == '\\' && 
+        (*From) += 2;       /* 跳过 LF 换行转义 */
+
+    while ( *From != End && **From == '\\' &&
             &(*From)[1] != End && &(*From)[2] != End && (*From)[1] == '\r' && (*From)[2] == '\n')
-        (*From) += 3;       /* skip escaped end of lines with CR/LF line termination */
-    
+        (*From) += 3;       /* 跳过 CR/LF 换行转义 */
+
     if (*From == End)
         return '\\';
-    
+
     if (**From == '\\')
-    { 
-        /* it's escaped */
+    {
+        /* 转义字符 */
         (*From)++;
         if (*From == End)
             return '\\';
-        
+
         ThisChar = *(*From)++;
         switch (ThisChar)
         {
-            case '\\': return '\\'; 
+            case '\\': return '\\';
             case '\'': return '\'';
             case '"':  return '"';
             case 'a':  return '\a';
@@ -321,7 +334,7 @@ unsigned char LexUnEscapeCharacter(const char **From, const char *End)
         return *(*From)++;
 }
 
-/* get a string constant - used while scanning */
+/* 解析字符串常量：处理转义、查重存储，返回 char* 指针 */
 enum LexToken LexGetStringConstant(Picoc *pc, struct LexState *Lexer, struct Value *Value, char EndChar)
 {
     int Escape = FALSE;
@@ -331,15 +344,15 @@ enum LexToken LexGetStringConstant(Picoc *pc, struct LexState *Lexer, struct Val
     char *EscBufPos;
     char *RegString;
     struct Value *ArrayValue;
-    
+
     while (Lexer->Pos != Lexer->End && (*Lexer->Pos != EndChar || Escape))
-    { 
-        /* find the end */
+    {
+        /* 找到字符串结束位置 */
         if (Escape)
         {
             if (*Lexer->Pos == '\r' && Lexer->Pos+1 != Lexer->End)
                 Lexer->Pos++;
-            
+
             if (*Lexer->Pos == '\n' && Lexer->Pos+1 != Lexer->End)
             {
                 Lexer->Line++;
@@ -347,63 +360,63 @@ enum LexToken LexGetStringConstant(Picoc *pc, struct LexState *Lexer, struct Val
                 Lexer->CharacterPos = 0;
                 Lexer->EmitExtraNewlines++;
             }
-            
+
             Escape = FALSE;
         }
         else if (*Lexer->Pos == '\\')
             Escape = TRUE;
-            
+
         LEXER_INC(Lexer);
     }
     EndPos = Lexer->Pos;
-    
+
     EscBuf = HeapAllocStack(pc, EndPos - StartPos);
     if (EscBuf == NULL)
         LexFail(pc, Lexer, "out of memory");
-    
+
     for (EscBufPos = EscBuf, Lexer->Pos = StartPos; Lexer->Pos != EndPos;)
         *EscBufPos++ = LexUnEscapeCharacter(&Lexer->Pos, EndPos);
-    
-    /* try to find an existing copy of this string literal */
+
+    /* 尝试查找已存在的字符串字面量以避免重复存储 */
     RegString = TableStrRegister2(pc, EscBuf, EscBufPos - EscBuf);
     HeapPopStack(pc, EscBuf, EndPos - StartPos);
     ArrayValue = VariableStringLiteralGet(pc, RegString);
     if (ArrayValue == NULL)
     {
-        /* create and store this string literal */
+        /* 创建并存储新的字符串字面量 */
         ArrayValue = VariableAllocValueAndData(pc, NULL, 0, FALSE, NULL, TRUE);
         ArrayValue->Typ = pc->CharArrayType;
         ArrayValue->Val = (union AnyValue *)RegString;
         VariableStringLiteralDefine(pc, RegString, ArrayValue);
     }
 
-    /* create the the pointer for this char* */
+    /* 创建 char* 指针 */
     Value->Typ = pc->CharPtrType;
     Value->Val->Pointer = RegString;
     if (*Lexer->Pos == EndChar)
         LEXER_INC(Lexer);
-    
+
     return TokenStringConstant;
 }
 
-/* get a character constant - used while scanning */
+/* 解析字符常量（如 'a'、'\n' 等） */
 enum LexToken LexGetCharacterConstant(Picoc *pc, struct LexState *Lexer, struct Value *Value)
 {
     Value->Typ = &pc->CharType;
     Value->Val->Character = LexUnEscapeCharacter(&Lexer->Pos, Lexer->End);
     if (Lexer->Pos != Lexer->End && *Lexer->Pos != '\'')
         LexFail(pc, Lexer, "expected \"'\"");
-        
+
     LEXER_INC(Lexer);
     return TokenCharacterConstant;
 }
 
-/* skip a comment - used while scanning */
+/* 跳过注释：支持 C 风格块注释和 C++ 风格行注释 */
 void LexSkipComment(struct LexState *Lexer, char NextChar, enum LexToken *ReturnToken)
 {
     if (NextChar == '*')
-    {   
-        /* conventional C comment */
+    {
+        /* C 风格块注释 */
         while (Lexer->Pos != Lexer->End && (*(Lexer->Pos-1) != '*' || *Lexer->Pos != '/'))
         {
             if (*Lexer->Pos == '\n')
@@ -411,35 +424,35 @@ void LexSkipComment(struct LexState *Lexer, char NextChar, enum LexToken *Return
 
             LEXER_INC(Lexer);
         }
-        
+
         if (Lexer->Pos != Lexer->End)
             LEXER_INC(Lexer);
-        
+
         Lexer->Mode = LexModeNormal;
     }
     else
-    {   
-        /* C++ style comment */
+    {
+        /* C++ 风格行注释 */
         while (Lexer->Pos != Lexer->End && *Lexer->Pos != '\n')
             LEXER_INC(Lexer);
     }
 }
 
-/* get a single token from the source - used while scanning */
+/* 扫描并返回一个 token：根据当前字符分派到标识符、数字、字符串、字符或运算符解析 */
 enum LexToken LexScanGetToken(Picoc *pc, struct LexState *Lexer, struct Value **Value)
 {
     char ThisChar;
     char NextChar;
     enum LexToken GotToken = TokenNone;
-    
-    /* handle cases line multi-line comments or string constants which mess up the line count */
+
+    /* 处理多行注释或字符串造成行号偏移的情况 */
     if (Lexer->EmitExtraNewlines > 0)
     {
         Lexer->EmitExtraNewlines--;
         return TokenEndOfLine;
     }
-    
-    /* scan for a token */
+
+    /* 扫描 token */
     do
     {
         *Value = &pc->LexValue;
@@ -455,23 +468,23 @@ enum LexToken LexScanGetToken(Picoc *pc, struct LexState *Lexer, struct Value **
             }
             else if (Lexer->Mode == LexModeHashDefine || Lexer->Mode == LexModeHashDefineSpace)
                 Lexer->Mode = LexModeHashDefineSpace;
-            
+
             else if (Lexer->Mode == LexModeHashDefineSpaceIdent)
                 Lexer->Mode = LexModeNormal;
-    
+
             LEXER_INC(Lexer);
         }
-        
+
         if (Lexer->Pos == Lexer->End || *Lexer->Pos == '\0')
             return TokenEOF;
-        
+
         ThisChar = *Lexer->Pos;
         if (isCidstart((int)ThisChar))
             return LexGetWord(pc, Lexer, *Value);
-        
+
         if (isdigit((int)ThisChar))
             return LexGetNumber(pc, Lexer, *Value);
-        
+
         NextChar = (Lexer->Pos+1 != Lexer->End) ? *(Lexer->Pos+1) : 0;
         LEXER_INC(Lexer);
         switch (ThisChar)
@@ -486,7 +499,7 @@ enum LexToken LexScanGetToken(Picoc *pc, struct LexState *Lexer, struct Value **
             case '*': NEXTIS('=', TokenMultiplyAssign, TokenAsterisk); break;
             case '/': if (NextChar == '/' || NextChar == '*') { LEXER_INC(Lexer); LexSkipComment(Lexer, NextChar, &GotToken); } else NEXTIS('=', TokenDivideAssign, TokenSlash); break;
             case '%': NEXTIS('=', TokenModulusAssign, TokenModulus); break;
-            case '<': if (Lexer->Mode == LexModeHashInclude) GotToken = LexGetStringConstant(pc, Lexer, *Value, '>'); else { NEXTIS3PLUS('=', TokenLessEqual, '<', TokenShiftLeft, '=', TokenShiftLeftAssign, TokenLessThan); } break; 
+            case '<': if (Lexer->Mode == LexModeHashInclude) GotToken = LexGetStringConstant(pc, Lexer, *Value, '>'); else { NEXTIS3PLUS('=', TokenLessEqual, '<', TokenShiftLeft, '=', TokenShiftLeftAssign, TokenLessThan); } break;
             case '>': NEXTIS3PLUS('=', TokenGreaterEqual, '>', TokenShiftRight, '=', TokenShiftRightAssign, TokenGreaterThan); break;
             case ';': GotToken = TokenSemicolon; break;
             case '&': NEXTIS3('=', TokenArithmeticAndAssign, '&', TokenLogicalAnd, TokenAmpersand); break;
@@ -505,11 +518,11 @@ enum LexToken LexScanGetToken(Picoc *pc, struct LexState *Lexer, struct Value **
             default:  LexFail(pc, Lexer, "illegal character '%c'", ThisChar); break;
         }
     } while (GotToken == TokenNone);
-    
+
     return GotToken;
 }
 
-/* what size value goes with each token */
+/* 返回每种 token 类型对应的值所占字节数 */
 int LexTokenSize(enum LexToken Token)
 {
     switch (Token)
@@ -522,7 +535,7 @@ int LexTokenSize(enum LexToken Token)
     }
 }
 
-/* produce tokens from the lexer and return a heap buffer with the result - used for scanning */
+/* 将源代码全部 token 化：循环调用 LexScanGetToken 并将结果序列化到堆缓冲区中 */
 void *LexTokenise(Picoc *pc, struct LexState *Lexer, int *TokenLen)
 {
     enum LexToken Token;
@@ -530,17 +543,17 @@ void *LexTokenise(Picoc *pc, struct LexState *Lexer, int *TokenLen)
     struct Value *GotValue;
     int MemUsed = 0;
     int ValueSize;
-    int ReserveSpace = (Lexer->End - Lexer->Pos) * 4 + 16; 
+    int ReserveSpace = (Lexer->End - Lexer->Pos) * 4 + 16;
     void *TokenSpace = HeapAllocStack(pc, ReserveSpace);
     char *TokenPos = (char *)TokenSpace;
     int LastCharacterPos = 0;
 
     if (TokenSpace == NULL)
         LexFail(pc, Lexer, "out of memory");
-    
+
     do
-    { 
-        /* store the token at the end of the stack area */
+    {
+        /* 将 token 存储到栈区末尾 */
         Token = LexScanGetToken(pc, Lexer, &GotValue);
 
 #ifdef DEBUG_LEXER
@@ -556,21 +569,21 @@ void *LexTokenise(Picoc *pc, struct LexState *Lexer, int *TokenLen)
 
         ValueSize = LexTokenSize(Token);
         if (ValueSize > 0)
-        { 
-            /* store a value as well */
+        {
+            /* 附带值的 token：将值也拷贝进来 */
             memcpy((void *)TokenPos, (void *)GotValue->Val, ValueSize);
             TokenPos += ValueSize;
             MemUsed += ValueSize;
         }
-    
+
         LastCharacterPos = Lexer->CharacterPos;
-                    
+
     } while (Token != TokenEOF);
-    
+
     HeapMem = HeapAllocMem(pc, MemUsed);
     if (HeapMem == NULL)
         LexFail(pc, Lexer, "out of memory");
-        
+
     assert(ReserveSpace >= MemUsed);
     memcpy(HeapMem, TokenSpace, MemUsed);
     HeapPopStack(pc, TokenSpace, ReserveSpace);
@@ -585,15 +598,15 @@ void *LexTokenise(Picoc *pc, struct LexState *Lexer, int *TokenLen)
 #endif
     if (TokenLen)
         *TokenLen = MemUsed;
-    
+
     return HeapMem;
 }
 
-/* lexically analyse some source text */
+/* 词法分析入口：初始化 Lexer 状态，调用 LexTokenise 生成 token 序列 */
 void *LexAnalyse(Picoc *pc, const char *FileName, const char *Source, int SourceLen, int *TokenLen)
 {
     struct LexState Lexer;
-    
+
     Lexer.Pos = Source;
     Lexer.End = Source + SourceLen;
     Lexer.Line = 1;
@@ -602,11 +615,11 @@ void *LexAnalyse(Picoc *pc, const char *FileName, const char *Source, int Source
     Lexer.EmitExtraNewlines = 0;
     Lexer.CharacterPos = 1;
     Lexer.SourceText = Source;
-    
+
     return LexTokenise(pc, &Lexer, TokenLen);
 }
 
-/* prepare to parse a pre-tokenised buffer */
+/* 初始化解析器状态：绑定 picoc 实例、token 源、文件名、运行模式和调试标志 */
 void LexInitParser(struct ParseState *Parser, Picoc *pc, const char *SourceText, void *TokenSource, char *FileName, int RunIt, int EnableDebugger)
 {
     Parser->pc = pc;
@@ -622,41 +635,42 @@ void LexInitParser(struct ParseState *Parser, Picoc *pc, const char *SourceText,
     Parser->DebugMode = EnableDebugger;
 }
 
-/* get the next token, without pre-processing */
+/* 获取下一个原始 token（不含预处理展开）。
+ * 交互模式下，如果当前行 token 耗尽则自动读取新一行输入。 */
 enum LexToken LexGetRawToken(struct ParseState *Parser, struct Value **Value, int IncPos)
 {
     enum LexToken Token = TokenNone;
     int ValueSize;
     char *Prompt = NULL;
     Picoc *pc = Parser->pc;
-    
+
     do
-    { 
-        /* get the next token */
+    {
+        /* 获取下一个 token */
         if (Parser->Pos == NULL && pc->InteractiveHead != NULL)
             Parser->Pos = pc->InteractiveHead->Tokens;
-        
+
         if (Parser->FileName != pc->StrEmpty || pc->InteractiveHead != NULL)
-        { 
-            /* skip leading newlines */
+        {
+            /* 跳过开头的换行 token */
             while ((Token = (enum LexToken)*(unsigned char *)Parser->Pos) == TokenEndOfLine)
             {
                 Parser->Line++;
                 Parser->Pos += TOKEN_DATA_OFFSET;
             }
         }
-    
+
         if (Parser->FileName == pc->StrEmpty && (pc->InteractiveHead == NULL || Token == TokenEOF))
-        { 
-            /* we're at the end of an interactive input token list */
+        {
+            /* 交互模式：当前行结束，读取下一行输入 */
             char LineBuffer[LINEBUFFER_MAX];
             void *LineTokens;
             int LineBytes;
             struct TokenLine *LineNode;
-            
+
             if (pc->InteractiveHead == NULL || (unsigned char *)Parser->Pos == &pc->InteractiveTail->Tokens[pc->InteractiveTail->NumBytes-TOKEN_DATA_OFFSET])
-            { 
-                /* get interactive input */
+            {
+                /* 读取一行新的交互输入 */
                 if (pc->LexUseStatementPrompt)
                 {
                     Prompt = INTERACTIVE_PROMPT_STATEMENT;
@@ -664,18 +678,18 @@ enum LexToken LexGetRawToken(struct ParseState *Parser, struct Value **Value, in
                 }
                 else
                     Prompt = INTERACTIVE_PROMPT_LINE;
-                    
+
                 if (PlatformGetLine(&LineBuffer[0], LINEBUFFER_MAX, Prompt) == NULL)
                     return TokenEOF;
 
-                /* put the new line at the end of the linked list of interactive lines */        
+                /* 将新行追加到交互输入链表末尾 */
                 LineTokens = LexAnalyse(pc, pc->StrEmpty, &LineBuffer[0], strlen(LineBuffer), &LineBytes);
                 LineNode = VariableAlloc(pc, Parser, sizeof(struct TokenLine), TRUE);
                 LineNode->Tokens = LineTokens;
                 LineNode->NumBytes = LineBytes;
                 if (pc->InteractiveHead == NULL)
-                { 
-                    /* start a new list */
+                {
+                    /* 初始化为新链表 */
                     pc->InteractiveHead = LineNode;
                     Parser->Line = 1;
                     Parser->CharacterPos = 0;
@@ -688,11 +702,11 @@ enum LexToken LexGetRawToken(struct ParseState *Parser, struct Value **Value, in
                 Parser->Pos = LineTokens;
             }
             else
-            { 
-                /* go to the next token line */
+            {
+                /* 移动到下一个 token 行 */
                 if (Parser->Pos != &pc->InteractiveCurrentLine->Tokens[pc->InteractiveCurrentLine->NumBytes-TOKEN_DATA_OFFSET])
-                { 
-                    /* scan for the line */
+                {
+                    /* 扫描找到当前行 */
                     for (pc->InteractiveCurrentLine = pc->InteractiveHead; Parser->Pos != &pc->InteractiveCurrentLine->Tokens[pc->InteractiveCurrentLine->NumBytes-TOKEN_DATA_OFFSET]; pc->InteractiveCurrentLine = pc->InteractiveCurrentLine->Next)
                     { assert(pc->InteractiveCurrentLine->Next != NULL); }
                 }
@@ -710,10 +724,10 @@ enum LexToken LexGetRawToken(struct ParseState *Parser, struct Value **Value, in
     Parser->CharacterPos = *((unsigned char *)Parser->Pos + 1);
     ValueSize = LexTokenSize(Token);
     if (ValueSize > 0)
-    { 
-        /* this token requires a value - unpack it */
+    {
+        /* 该 token 附带一个值，解包它 */
         if (Value != NULL)
-        { 
+        {
             switch (Token)
             {
                 case TokenStringConstant:       pc->LexValue.Typ = pc->CharPtrType; break;
@@ -725,7 +739,7 @@ enum LexToken LexGetRawToken(struct ParseState *Parser, struct Value **Value, in
 #endif
                 default: break;
             }
-            
+
             memcpy((void *)pc->LexValue.Val, (void *)((char *)Parser->Pos + TOKEN_DATA_OFFSET), ValueSize);
             pc->LexValue.ValOnHeap = FALSE;
             pc->LexValue.ValOnStack = FALSE;
@@ -733,7 +747,7 @@ enum LexToken LexGetRawToken(struct ParseState *Parser, struct Value **Value, in
             pc->LexValue.LValueFrom = NULL;
             *Value = &pc->LexValue;
         }
-        
+
         if (IncPos)
             Parser->Pos += ValueSize + TOKEN_DATA_OFFSET;
     }
@@ -742,7 +756,7 @@ enum LexToken LexGetRawToken(struct ParseState *Parser, struct Value **Value, in
         if (IncPos && Token != TokenEOF)
             Parser->Pos += TOKEN_DATA_OFFSET;
     }
-    
+
 #ifdef DEBUG_LEXER
     printf("Got token=%02x inc=%d pos=%d\n", Token, IncPos, Parser->CharacterPos);
 #endif
@@ -750,40 +764,40 @@ enum LexToken LexGetRawToken(struct ParseState *Parser, struct Value **Value, in
     return Token;
 }
 
-/* correct the token position depending if we already incremented the position */
+/* 根据 IncPos 标志修正 token 位置（用于预处理指令宏） */
 void LexHashIncPos(struct ParseState *Parser, int IncPos)
 {
     if (!IncPos)
         LexGetRawToken(Parser, NULL, TRUE);
 }
 
-/* handle a #ifdef directive */
+/* 处理 #ifdef / #ifndef 预处理指令 */
 void LexHashIfdef(struct ParseState *Parser, int IfNot)
 {
-    /* get symbol to check */
+    /* 获取要检查的标识符 */
     struct Value *IdentValue;
     struct Value *SavedValue;
     int IsDefined;
     enum LexToken Token = LexGetRawToken(Parser, &IdentValue, TRUE);
-    
+
     if (Token != TokenIdentifier)
         ProgramFail(Parser, "identifier expected");
-    
-    /* is the identifier defined? */
+
+    /* 检查标识符是否已定义 */
     IsDefined = TableGet(&Parser->pc->GlobalTable, IdentValue->Val->Identifier, &SavedValue, NULL, NULL, NULL);
     if (Parser->HashIfEvaluateToLevel == Parser->HashIfLevel && ( (IsDefined && !IfNot) || (!IsDefined && IfNot)) )
     {
-        /* #if is active, evaluate to this new level */
+        /* #if 条件成立，激活这一级 */
         Parser->HashIfEvaluateToLevel++;
     }
-    
+
     Parser->HashIfLevel++;
 }
 
-/* handle a #if directive */
+/* 处理 #if 预处理指令（条件为宏或整型常量） */
 void LexHashIf(struct ParseState *Parser)
 {
-    /* get symbol to check */
+    /* 获取要检查的符号 */
     struct Value *IdentValue;
     struct Value *SavedValue = NULL;
     struct ParseState MacroParser;
@@ -791,47 +805,47 @@ void LexHashIf(struct ParseState *Parser)
 
     if (Token == TokenIdentifier)
     {
-        /* look up a value from a macro definition */
+        /* 从宏定义中查找值 */
         if (!TableGet(&Parser->pc->GlobalTable, IdentValue->Val->Identifier, &SavedValue, NULL, NULL, NULL))
             ProgramFail(Parser, "'%s' is undefined", IdentValue->Val->Identifier);
-        
+
         if (SavedValue->Typ->Base != TypeMacro)
             ProgramFail(Parser, "value expected");
-        
+
         ParserCopy(&MacroParser, &SavedValue->Val->MacroDef.Body);
         Token = LexGetRawToken(&MacroParser, &IdentValue, TRUE);
     }
-    
+
     if (Token != TokenCharacterConstant && Token != TokenIntegerConstant)
         ProgramFail(Parser, "value expected");
-    
-    /* is the identifier defined? */
+
+    /* 检查标识符是否定义且值为真 */
     if (Parser->HashIfEvaluateToLevel == Parser->HashIfLevel && IdentValue->Val->Character)
     {
-        /* #if is active, evaluate to this new level */
+        /* #if 条件成立，激活这一级 */
         Parser->HashIfEvaluateToLevel++;
     }
-    
+
     Parser->HashIfLevel++;
 }
 
-/* handle a #else directive */
+/* 处理 #else 预处理指令：翻转条件求值状态 */
 void LexHashElse(struct ParseState *Parser)
 {
     if (Parser->HashIfEvaluateToLevel == Parser->HashIfLevel - 1)
-        Parser->HashIfEvaluateToLevel++;     /* #if was not active, make this next section active */
-        
+        Parser->HashIfEvaluateToLevel++;     /* #if 之前未激活，现在激活 #else 段 */
+
     else if (Parser->HashIfEvaluateToLevel == Parser->HashIfLevel)
     {
-        /* #if was active, now go inactive */
+        /* #if 之前已激活，#else 段跳过 */
         if (Parser->HashIfLevel == 0)
             ProgramFail(Parser, "#else without #if");
-            
+
         Parser->HashIfEvaluateToLevel--;
     }
 }
 
-/* handle a #endif directive */
+/* 处理 #endif 预处理指令：结束一个条件块 */
 void LexHashEndif(struct ParseState *Parser)
 {
     if (Parser->HashIfLevel == 0)
@@ -846,23 +860,23 @@ void LexHashEndif(struct ParseState *Parser)
 void LexPrintToken(enum LexToken Token)
 {
     char* TokenNames[] = {
-        /* 0x00 */ "None", 
+        /* 0x00 */ "None",
         /* 0x01 */ "Comma",
         /* 0x02 */ "Assign", "AddAssign", "SubtractAssign", "MultiplyAssign", "DivideAssign", "ModulusAssign",
         /* 0x08 */ "ShiftLeftAssign", "ShiftRightAssign", "ArithmeticAndAssign", "ArithmeticOrAssign", "ArithmeticExorAssign",
-        /* 0x0d */ "QuestionMark", "Colon", 
-        /* 0x0f */ "LogicalOr", 
-        /* 0x10 */ "LogicalAnd", 
-        /* 0x11 */ "ArithmeticOr", 
-        /* 0x12 */ "ArithmeticExor", 
-        /* 0x13 */ "Ampersand", 
-        /* 0x14 */ "Equal", "NotEqual", 
+        /* 0x0d */ "QuestionMark", "Colon",
+        /* 0x0f */ "LogicalOr",
+        /* 0x10 */ "LogicalAnd",
+        /* 0x11 */ "ArithmeticOr",
+        /* 0x12 */ "ArithmeticExor",
+        /* 0x13 */ "Ampersand",
+        /* 0x14 */ "Equal", "NotEqual",
         /* 0x16 */ "LessThan", "GreaterThan", "LessEqual", "GreaterEqual",
-        /* 0x1a */ "ShiftLeft", "ShiftRight", 
-        /* 0x1c */ "Plus", "Minus", 
+        /* 0x1a */ "ShiftLeft", "ShiftRight",
+        /* 0x1c */ "Plus", "Minus",
         /* 0x1e */ "Asterisk", "Slash", "Modulus",
         /* 0x21 */ "Increment", "Decrement", "UnaryNot", "UnaryExor", "Sizeof", "Cast",
-        /* 0x27 */ "LeftSquareBracket", "RightSquareBracket", "Dot", "Arrow", 
+        /* 0x27 */ "LeftSquareBracket", "RightSquareBracket", "Dot", "Arrow",
         /* 0x2b */ "OpenBracket", "CloseBracket",
         /* 0x2d */ "Identifier", "IntegerConstant", "FPConstant", "StringConstant", "CharacterConstant",
         /* 0x32 */ "Semicolon", "Ellipsis",
@@ -879,13 +893,15 @@ void LexPrintToken(enum LexToken Token)
 }
 #endif
 
-/* get the next token given a parser state, pre-processing as we go */
+/* 获取下一个 token（含预处理展开）。
+ * 自动处理 #if/#ifdef/#ifndef/#else/#endif 条件编译指令，
+ * 跳过不满足条件的 token 块，对外透明。 */
 enum LexToken LexGetToken(struct ParseState *Parser, struct Value **Value, int IncPos)
 {
     enum LexToken Token;
     int TryNextToken;
-    
-    /* implements the pre-processor #if commands */
+
+    /* 实现预处理 #if 系列指令 */
     do
     {
         int WasPreProcToken = TRUE;
@@ -901,23 +917,23 @@ enum LexToken LexGetToken(struct ParseState *Parser, struct Value **Value, int I
             default:                WasPreProcToken = FALSE; break;
         }
 
-        /* if we're going to reject this token, increment the token pointer to the next one */
+        /* 如果 token 需要被跳过（条件不满足或本身就是预处理器 token），移动指针到下一个 */
         TryNextToken = (Parser->HashIfEvaluateToLevel < Parser->HashIfLevel && Token != TokenEOF) || WasPreProcToken;
         if (!IncPos && TryNextToken)
             LexGetRawToken(Parser, NULL, TRUE);
-            
+
     } while (TryNextToken);
-    
+
     return Token;
 }
 
-/* take a quick peek at the next token, skipping any pre-processing */
+/* 窥视下一个 token 而不消耗它（跳过预处理） */
 enum LexToken LexRawPeekToken(struct ParseState *Parser)
 {
     return (enum LexToken)*(unsigned char *)Parser->Pos;
 }
 
-/* find the end of the line */
+/* 跳过当前行剩余的所有 token */
 void LexToEndOfLine(struct ParseState *Parser)
 {
     while (TRUE)
@@ -930,7 +946,9 @@ void LexToEndOfLine(struct ParseState *Parser)
     }
 }
 
-/* copy the tokens from StartParser to EndParser into new memory, removing TokenEOFs and terminate with a TokenEndOfFunction */
+/* 拷贝 StartParser 到 EndParser 之间的 token 到新内存中，
+ * 移除 TokenEOF 并以 TokenEndOfFunction 结尾。
+ * 用于函数体、宏体等需要独立存储 token 序列的场景。 */
 void *LexCopyTokens(struct ParseState *StartParser, struct ParseState *EndParser)
 {
     int MemSize = 0;
@@ -940,39 +958,39 @@ void *LexCopyTokens(struct ParseState *StartParser, struct ParseState *EndParser
     unsigned char *NewTokenPos;
     struct TokenLine *ILine;
     Picoc *pc = StartParser->pc;
-    
+
     if (pc->InteractiveHead == NULL)
-    { 
-        /* non-interactive mode - copy the tokens */
+    {
+        /* 非交互模式：直接拷贝 */
         MemSize = EndParser->Pos - StartParser->Pos;
         NewTokens = VariableAlloc(pc, StartParser, MemSize + TOKEN_DATA_OFFSET, TRUE);
         memcpy(NewTokens, (void *)StartParser->Pos, MemSize);
     }
     else
-    { 
-        /* we're in interactive mode - add up line by line */
+    {
+        /* 交互模式：逐行累加 */
         for (pc->InteractiveCurrentLine = pc->InteractiveHead; pc->InteractiveCurrentLine != NULL && (Pos < &pc->InteractiveCurrentLine->Tokens[0] || Pos >= &pc->InteractiveCurrentLine->Tokens[pc->InteractiveCurrentLine->NumBytes]); pc->InteractiveCurrentLine = pc->InteractiveCurrentLine->Next)
-        {} /* find the line we just counted */
-        
+        {} /* 找到当前位置所在的行 */
+
         if (EndParser->Pos >= StartParser->Pos && EndParser->Pos < &pc->InteractiveCurrentLine->Tokens[pc->InteractiveCurrentLine->NumBytes])
-        { 
-            /* all on a single line */
+        {
+            /* 所有 token 在同一行 */
             MemSize = EndParser->Pos - StartParser->Pos;
             NewTokens = VariableAlloc(pc, StartParser, MemSize + TOKEN_DATA_OFFSET, TRUE);
             memcpy(NewTokens, (void *)StartParser->Pos, MemSize);
         }
         else
-        { 
-            /* it's spread across multiple lines */
+        {
+            /* 跨越多行 */
             MemSize = &pc->InteractiveCurrentLine->Tokens[pc->InteractiveCurrentLine->NumBytes-TOKEN_DATA_OFFSET] - Pos;
 
             for (ILine = pc->InteractiveCurrentLine->Next; ILine != NULL && (EndParser->Pos < &ILine->Tokens[0] || EndParser->Pos >= &ILine->Tokens[ILine->NumBytes]); ILine = ILine->Next)
                 MemSize += ILine->NumBytes - TOKEN_DATA_OFFSET;
-            
+
             assert(ILine != NULL);
             MemSize += EndParser->Pos - &ILine->Tokens[0];
             NewTokens = VariableAlloc(pc, StartParser, MemSize + TOKEN_DATA_OFFSET, TRUE);
-            
+
             CopySize = &pc->InteractiveCurrentLine->Tokens[pc->InteractiveCurrentLine->NumBytes-TOKEN_DATA_OFFSET] - Pos;
             memcpy(NewTokens, Pos, CopySize);
             NewTokenPos = NewTokens + CopySize;
@@ -985,19 +1003,19 @@ void *LexCopyTokens(struct ParseState *StartParser, struct ParseState *EndParser
             memcpy(NewTokenPos, &ILine->Tokens[0], EndParser->Pos - &ILine->Tokens[0]);
         }
     }
-    
+
     NewTokens[MemSize] = (unsigned char)TokenEndOfFunction;
-        
+
     return NewTokens;
 }
 
-/* indicate that we've completed up to this point in the interactive input and free expired tokens */
+/* 清除所有交互输入的 token 行（如 REPL 重置时调用） */
 void LexInteractiveClear(Picoc *pc, struct ParseState *Parser)
 {
     while (pc->InteractiveHead != NULL)
     {
         struct TokenLine *NextLine = pc->InteractiveHead->Next;
-        
+
         HeapFreeMem(pc, pc->InteractiveHead->Tokens);
         HeapFreeMem(pc, pc->InteractiveHead);
         pc->InteractiveHead = NextLine;
@@ -1005,32 +1023,32 @@ void LexInteractiveClear(Picoc *pc, struct ParseState *Parser)
 
     if (Parser != NULL)
         Parser->Pos = NULL;
-        
+
     pc->InteractiveTail = NULL;
 }
 
-/* indicate that we've completed up to this point in the interactive input and free expired tokens */
+/* 释放交互输入中已处理完毕的 token 行（已完成解析的前缀行） */
 void LexInteractiveCompleted(Picoc *pc, struct ParseState *Parser)
 {
     while (pc->InteractiveHead != NULL && !(Parser->Pos >= &pc->InteractiveHead->Tokens[0] && Parser->Pos < &pc->InteractiveHead->Tokens[pc->InteractiveHead->NumBytes]))
-    { 
-        /* this token line is no longer needed - free it */
+    {
+        /* 该 token 行不再需要，释放 */
         struct TokenLine *NextLine = pc->InteractiveHead->Next;
-        
+
         HeapFreeMem(pc, pc->InteractiveHead->Tokens);
         HeapFreeMem(pc, pc->InteractiveHead);
         pc->InteractiveHead = NextLine;
-        
+
         if (pc->InteractiveHead == NULL)
-        { 
-            /* we've emptied the list */
+        {
+            /* 链表已清空 */
             Parser->Pos = NULL;
             pc->InteractiveTail = NULL;
         }
     }
 }
 
-/* the next time we prompt, make it the full statement prompt */
+/* 将下一次交互提示设为完整的语句提示符 */
 void LexInteractiveStatementPrompt(Picoc *pc)
 {
     pc->LexUseStatementPrompt = TRUE;

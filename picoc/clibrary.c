@@ -1,25 +1,28 @@
-/* picoc mini standard C library - provides an optional tiny C standard library 
- * if BUILTIN_MINI_STDLIB is defined */ 
- 
+/* picoc mini standard C library - provides an optional tiny C standard library
+ * if BUILTIN_MINI_STDLIB is defined */
+
+/* PicoC 迷你 C 标准库 — 在嵌入式平台 (BUILTIN_MINI_STDLIB) 下提供 printf/putchar/sprintf 等精简实现;
+ * 输出通过平台底层 PrintCh/PrintStr/PrintSimpleInt/PrintFP 完成，最终到达 PlatformPutc 串口输出 */
+
 #include "picoc.h"
 #include "interpreter.h"
 
 
-/* endian-ness checking */
+/* 大小端检测 */
 static const int __ENDIAN_CHECK__ = 1;
 static int BigEndian;
 static int LittleEndian;
 
 
-/* global initialisation for libraries */
+/* 库系统全局初始化: 定义版本宏和大小端宏 */
 void LibraryInit(Picoc *pc)
 {
-    
-    /* define the version number macro */
+
+    /* 定义版本号宏 */
     pc->VersionString = TableStrRegister(pc, PICOC_VERSION);
     VariableDefinePlatformVar(pc, NULL, "PICOC_VERSION", pc->CharPtrType, (union AnyValue *)&pc->VersionString, FALSE);
 
-    /* define endian-ness macros */
+    /* 定义大小端宏 */
     BigEndian = ((*(char*)&__ENDIAN_CHECK__) == 0);
     LittleEndian = ((*(char*)&__ENDIAN_CHECK__) == 1);
 
@@ -27,7 +30,7 @@ void LibraryInit(Picoc *pc)
     VariableDefinePlatformVar(pc, NULL, "LITTLE_ENDIAN", &pc->IntType, (union AnyValue *)&LittleEndian, FALSE);
 }
 
-/* add a library */
+/* 添加库函数列表: 解析每个函数的原型字符串，创建内建函数 Value 并注册 */
 void LibraryAdd(Picoc *pc, struct Table *GlobalTable, const char *LibraryName, struct LibraryFunction *FuncList)
 {
     struct ParseState Parser;
@@ -37,8 +40,8 @@ void LibraryAdd(Picoc *pc, struct Table *GlobalTable, const char *LibraryName, s
     struct Value *NewValue;
     void *Tokens;
     char *IntrinsicName = TableStrRegister(pc, "c library");
-    
-    /* read all the library definitions */
+
+    /* 遍历所有库函数定义 */
     for (Count = 0; FuncList[Count].Prototype != NULL; Count++)
     {
         Tokens = LexAnalyse(pc, IntrinsicName, FuncList[Count].Prototype, strlen((char *)FuncList[Count].Prototype), NULL);
@@ -50,7 +53,7 @@ void LibraryAdd(Picoc *pc, struct Table *GlobalTable, const char *LibraryName, s
     }
 }
 
-/* print a type to a stream without using printf/sprintf */
+/* 将类型名打印到输出流(不使用 printf/sprintf)。递归处理指针和数组类型 */
 void PrintType(struct ValueType *Typ, IOFILE *Stream)
 {
     switch (Typ->Base)
@@ -82,59 +85,62 @@ void PrintType(struct ValueType *Typ, IOFILE *Stream)
 
 #ifdef BUILTIN_MINI_STDLIB
 
-/* 
- * This is a simplified standard library for small embedded systems. It doesn't require
- * a system stdio library to operate.
- *
- * A more complete standard library for larger computers is in the library_XXX.c files.
+/*
+ * 嵌入式系统的简化标准库。不需要系统 stdio 支持。
+ * 更完整的标准库实现位于 library_XXX.c 文件中。
  */
- 
+
 static int TRUEValue = 1;
 static int ZeroValue = 0;
 
+/* 初始化基本 I/O: 将标准输出回调设置为平台串口输出函数 */
 void BasicIOInit(Picoc *pc)
 {
     pc->CStdOutBase.Putch = &PlatformPutc;
     pc->CStdOut = &pc->CStdOutBase;
 }
 
-/* initialise the C library */
+/* 初始化 C 库: 定义 NULL、TRUE、FALSE 常量 */
 void CLibraryInit(Picoc *pc)
 {
-    /* define some constants */
+    /* 定义常量 */
     VariableDefinePlatformVar(pc, NULL, "NULL", &pc->IntType, (union AnyValue *)&ZeroValue, FALSE);
     VariableDefinePlatformVar(pc, NULL, "TRUE", &pc->IntType, (union AnyValue *)&TRUEValue, FALSE);
     VariableDefinePlatformVar(pc, NULL, "FALSE", &pc->IntType, (union AnyValue *)&ZeroValue, FALSE);
 }
 
-/* stream for writing into strings */
+/* 字符串输出流的 putc: 将字符追加到字符串缓冲区 */
 void SPutc(unsigned char Ch, union OutputStreamInfo *Stream)
 {
     struct StringOutputStream *Out = &Stream->Str;
     *Out->WritePos++ = Ch;
 }
 
-/* print a character to a stream without using printf/sprintf */
+/* 输出单个字符到输出流(通过回调 Putch) */
 void PrintCh(char OutCh, struct OutputStream *Stream)
 {
     (*Stream->Putch)(OutCh, &Stream->i);
 }
 
-/* print a string to a stream without using printf/sprintf */
+/* 输出以 '\0' 结尾的字符串到输出流 */
 void PrintStr(const char *Str, struct OutputStream *Stream)
 {
     while (*Str != 0)
         PrintCh(*Str++, Stream);
 }
 
-/* print a single character a given number of times */
+/* 重复输出指定字符 Length 次 */
 void PrintRepeatedChar(char ShowChar, int Length, struct OutputStream *Stream)
 {
     while (Length-- > 0)
         PrintCh(ShowChar, Stream);
 }
 
-/* print an unsigned integer to a stream without using printf/sprintf */
+/* 输出无符号整数到流。支持:
+ * - Base: 进制(10/16/2)
+ * - FieldWidth: 最小字段宽度
+ * - ZeroPad: 用 '0' 填充
+ * - LeftJustify: 左对齐 */
 void PrintUnsigned(unsigned long Num, unsigned int Base, int FieldWidth, int ZeroPad, int LeftJustify, struct OutputStream *Stream)
 {
     char Result[33];
@@ -143,7 +149,7 @@ void PrintUnsigned(unsigned long Num, unsigned int Base, int FieldWidth, int Zer
     Result[--ResPos] = '\0';
     if (Num == 0)
         Result[--ResPos] = '0';
-            
+
     while (Num > 0)
     {
         unsigned long NextNum = Num / Base;
@@ -152,26 +158,26 @@ void PrintUnsigned(unsigned long Num, unsigned int Base, int FieldWidth, int Zer
             Result[--ResPos] = '0' + Digit;
         else
             Result[--ResPos] = 'a' + Digit - 10;
-        
+
         Num = NextNum;
     }
-    
+
     if (FieldWidth > 0 && !LeftJustify)
         PrintRepeatedChar(ZeroPad ? '0' : ' ', FieldWidth - (sizeof(Result) - 1 - ResPos), Stream);
-        
+
     PrintStr(&Result[ResPos], Stream);
 
     if (FieldWidth > 0 && LeftJustify)
         PrintRepeatedChar(' ', FieldWidth - (sizeof(Result) - 1 - ResPos), Stream);
 }
 
-/* print an integer to a stream without using printf/sprintf */
+/* 简单输出有符号整数(无格式选项) */
 void PrintSimpleInt(long Num, struct OutputStream *Stream)
 {
     PrintInt(Num, -1, FALSE, FALSE, Stream);
 }
 
-/* print an integer to a stream without using printf/sprintf */
+/* 输出有符号整数到流。负数打印 '-' 号，然后调用 PrintUnsigned */
 void PrintInt(long Num, int FieldWidth, int ZeroPad, int LeftJustify, struct OutputStream *Stream)
 {
     if (Num < 0)
@@ -181,29 +187,30 @@ void PrintInt(long Num, int FieldWidth, int ZeroPad, int LeftJustify, struct Out
         if (FieldWidth != 0)
             FieldWidth--;
     }
-    
+
     PrintUnsigned((unsigned long)Num, 10, FieldWidth, ZeroPad, LeftJustify, Stream);
 }
 
 #ifndef NO_FP
-/* print a double to a stream without using printf/sprintf */
+/* 输出浮点数到流(不使用 printf/sprintf)。格式化为科学计数法:
+ * 整数部分.小数部分e指数 */
 void PrintFP(double Num, struct OutputStream *Stream)
 {
     int Exponent = 0;
     int MaxDecimal;
-    
+
     if (Num < 0)
     {
         PrintCh('-', Stream);
-        Num = -Num;    
+        Num = -Num;
     }
-    
+
     if (Num >= 1e7)
         Exponent = log10(Num);
     else if (Num <= 1e-7 && Num != 0.0)
         Exponent = log10(Num) - 0.999999999;
-    
-    Num /= pow(10.0, Exponent);    
+
+    Num /= pow(10.0, Exponent);
     PrintInt((long)Num, 0, FALSE, FALSE, Stream);
     PrintCh('.', Stream);
     Num = (Num - (long)Num) * 10;
@@ -214,7 +221,7 @@ void PrintFP(double Num, struct OutputStream *Stream)
     }
     else
         PrintCh('0', Stream);
-        
+
     if (Exponent != 0)
     {
         PrintCh('e', Stream);
@@ -223,7 +230,10 @@ void PrintFP(double Num, struct OutputStream *Stream)
 }
 #endif
 
-/* intrinsic functions made available to the language */
+/* 通用 printf 格式化核心。解析格式字符串中的 % 说明符:
+ * %s - 字符串, %d - 有符号整数, %u - 无符号整数
+ * %x - 十六进制, %b - 二进制, %c - 字符, %f - 浮点数(可选)
+ * 支持标志: '-' 左对齐, '0' 零填充, 数字字段宽度 */
 void GenericPrintf(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs, struct OutputStream *Stream)
 {
     char *FPos;
@@ -234,32 +244,32 @@ void GenericPrintf(struct ParseState *Parser, struct Value *ReturnValue, struct 
     int ZeroPad = FALSE;
     int FieldWidth = 0;
     char *Format = Param[0]->Val->Pointer;
-    
+
     for (FPos = Format; *FPos != '\0'; FPos++)
     {
         if (*FPos == '%')
         {
             FPos++;
-	    FieldWidth = 0;
+		    FieldWidth = 0;
             if (*FPos == '-')
             {
-                /* a leading '-' means left justify */
+                /* '-' 表示左对齐 */
                 LeftJustify = TRUE;
                 FPos++;
             }
-            
+
             if (*FPos == '0')
             {
-                /* a leading zero means zero pad a decimal number */
+                /* '0' 表示数字零填充 */
                 ZeroPad = TRUE;
                 FPos++;
             }
-            
-            /* get any field width in the format */
+
+            /* 获取字段宽度数值 */
             while (isdigit((int)*FPos))
                 FieldWidth = FieldWidth * 10 + (*FPos++ - '0');
-            
-            /* now check the format type */
+
+            /* 检查格式字符类型 */
             switch (*FPos)
             {
                 case 's': FormatType = Parser->pc->CharPtrType; break;
@@ -271,12 +281,12 @@ void GenericPrintf(struct ParseState *Parser, struct Value *ReturnValue, struct 
                 case '\0': FPos--; FormatType = NULL; break;
                 default:  PrintCh(*FPos, Stream); FormatType = NULL; break;
             }
-            
+
             if (FormatType != NULL)
-            { 
-                /* we have to format something */
+            {
+                /* 有格式化输出 */
                 if (ArgCount >= NumArgs)
-                    PrintStr("XXX", Stream);   /* not enough parameters for format */
+                    PrintStr("XXX", Stream);   /* 参数不够 */
                 else
                 {
                     NextArg = (struct Value *)((char *)NextArg + MEM_ALIGN(sizeof(struct Value) + TypeStackSizeValue(NextArg)));
@@ -284,7 +294,7 @@ void GenericPrintf(struct ParseState *Parser, struct Value *ReturnValue, struct 
                             !((FormatType == &Parser->pc->IntType || *FPos == 'f') && IS_NUMERIC_COERCIBLE(NextArg)) &&
                             !(FormatType == Parser->pc->CharPtrType && (NextArg->Typ->Base == TypePointer ||
                                                              (NextArg->Typ->Base == TypeArray && NextArg->Typ->FromType->Base == TypeChar) ) ) )
-                        PrintStr("XXX", Stream);   /* bad type for format */
+                        PrintStr("XXX", Stream);   /* 类型不匹配 */
                     else
                     {
                         switch (*FPos)
@@ -292,16 +302,16 @@ void GenericPrintf(struct ParseState *Parser, struct Value *ReturnValue, struct 
                             case 's':
                             {
                                 char *Str;
-                                
+
                                 if (NextArg->Typ->Base == TypePointer)
                                     Str = NextArg->Val->Pointer;
                                 else
                                     Str = &NextArg->Val->ArrayMem[0];
-                                    
+
                                 if (Str == NULL)
-                                    PrintStr("NULL", Stream); 
+                                    PrintStr("NULL", Stream);
                                 else
-                                    PrintStr(Str, Stream); 
+                                    PrintStr(Str, Stream);
                                 break;
                             }
                             case 'd': PrintInt(ExpressionCoerceInteger(NextArg), FieldWidth, ZeroPad, LeftJustify, Stream); break;
@@ -315,7 +325,7 @@ void GenericPrintf(struct ParseState *Parser, struct Value *ReturnValue, struct 
                         }
                     }
                 }
-                
+
                 ArgCount++;
             }
         }
@@ -324,20 +334,20 @@ void GenericPrintf(struct ParseState *Parser, struct Value *ReturnValue, struct 
     }
 }
 
-/* printf(): print to console output */
+/* printf(): 格式化输出到控制台(通过 PlatformPutc) */
 void LibPrintf(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     struct OutputStream ConsoleStream;
-    
+
     ConsoleStream.Putch = &PlatformPutc;
     GenericPrintf(Parser, ReturnValue, Param, NumArgs, &ConsoleStream);
 }
 
-/* sprintf(): print to a string */
+/* sprintf(): 格式化输出到字符串缓冲区 */
 void LibSPrintf(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     struct OutputStream StrStream;
-    
+
     StrStream.Putch = &SPutc;
     StrStream.i.Str.Parser = Parser;
     StrStream.i.Str.WritePos = Param[0]->Val->Pointer;
@@ -347,7 +357,7 @@ void LibSPrintf(struct ParseState *Parser, struct Value *ReturnValue, struct Val
     ReturnValue->Val->Pointer = *Param;
 }
 
-/* get a line of input. protected from buffer overrun */
+/* gets(): 从平台读取一行输入，自动去除末尾换行符 */
 void LibGets(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Pointer = PlatformGetLine(Param[0]->Val->Pointer, GETS_BUF_MAX, NULL);
@@ -359,12 +369,13 @@ void LibGets(struct ParseState *Parser, struct Value *ReturnValue, struct Value 
     }
 }
 
+/* getchar(): 从平台读取单个字符 */
 void LibGetc(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = PlatformGetCharacter();
 }
 
-/* list of all library functions and their prototypes */
+/* 所有库函数及其原型列表 */
 struct LibraryFunction CLibrary[] =
 {
     { LibPrintf,        "void printf(char *, ...);" },

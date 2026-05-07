@@ -1,6 +1,9 @@
 /* picoc main program - this varies depending on your operating system and
  * how you're using picoc */
- 
+
+/* PicoC 主程序入口 (桌面平台/Linux/Windows 命令行版) — 仅用于桌面平台;
+ * STM32H7 嵌入式平台不使用此文件，而是使用 Core/Src/picoc_app.c 中的自定义入口 */
+
 /* include only picoc.h here - should be able to use it with only the external interfaces, no internals from interpreter.h */
 #include "picoc.h"
 

@@ -3,7 +3,8 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -18,6 +19,8 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -39,12 +42,18 @@ ERROR_KEYWORDS = (
     "abort",
 )
 
+TYPE_MAP = {
+    'i': 'int', 's': 'short', 'c': 'char', 'l': 'long',
+    'I': 'unsigned int', 'S': 'unsigned short', 'C': 'unsigned char',
+    'L': 'unsigned long', 'f': 'float', 'p': 'pointer',
+}
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("PicoC 上位机工具")
-        self.resize(1100, 800)
+        self.resize(1100, 950)
 
         self._console_line_buffer = ""
         self._upload_active = False
@@ -57,6 +66,10 @@ class MainWindow(QMainWindow):
         self._batch_active = False
         self._current_upload_path: Path | None = None
         self._single_step_mode = False
+        self._populating = False
+        self._watch_vars: set[str] = set()
+        self._watch_prev: dict[str, str] = {}
+        self._watch_cache: dict[str, tuple[str, str]] = {}
 
         self._build_ui()
         self._connect_signals()
@@ -68,8 +81,9 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(central)
 
         root.addWidget(self._build_connection_group())
-        root.addWidget(self._build_console_group(), 1)
         root.addWidget(self._build_debug_toolbar())
+        root.addLayout(self._build_var_watch_row())
+        root.addWidget(self._build_console_group(), 1)
         root.addWidget(self._build_actions_group())
 
         self.setCentralWidget(central)
@@ -107,6 +121,65 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.debug_eval_input)
         layout.addWidget(self.debug_eval_btn)
         return self.debug_toolbar
+
+    def _build_variable_watch_group(self) -> QGroupBox:
+        group = QGroupBox("变量监视")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        toolbar = QHBoxLayout()
+        self.watch_add_btn = QPushButton("加监视")
+        self.watch_add_btn.setFixedWidth(60)
+        self.watch_add_btn.clicked.connect(self._on_watch_add)
+        self.watch_clear_btn = QPushButton("清监视")
+        self.watch_clear_btn.setFixedWidth(60)
+        self.watch_clear_btn.clicked.connect(self._on_watch_clear_all)
+        toolbar.addWidget(self.watch_add_btn)
+        toolbar.addWidget(self.watch_clear_btn)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        self.var_table = QTableWidget(0, 3)
+        self.var_table.setHorizontalHeaderLabels(["名称", "类型", "值"])
+        self.var_table.horizontalHeader().setStretchLastSection(True)
+        self.var_table.setMaximumHeight(120)
+        self.var_table.verticalHeader().setVisible(False)
+        self.var_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.var_table.setEditTriggers(
+            QTableWidget.DoubleClicked | QTableWidget.EditKeyPressed
+        )
+        self.var_table.itemChanged.connect(self._on_var_item_changed)
+
+        layout.addWidget(self.var_table)
+        return group
+
+    def _build_watch_group(self) -> QGroupBox:
+        group = QGroupBox("Watch")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        self.watch_table = QTableWidget(0, 3)
+        self.watch_table.setHorizontalHeaderLabels(["名称", "类型", "值"])
+        self.watch_table.horizontalHeader().setStretchLastSection(True)
+        self.watch_table.setMaximumHeight(120)
+        self.watch_table.verticalHeader().setVisible(False)
+        self.watch_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.watch_table.setEditTriggers(QTableWidget.NoEditTriggers)
+
+        remove_row = QHBoxLayout()
+        self.watch_remove_btn = QPushButton("移除选中")
+        self.watch_remove_btn.clicked.connect(self._on_watch_remove)
+        remove_row.addWidget(self.watch_remove_btn)
+        remove_row.addStretch()
+        layout.addLayout(remove_row)
+        layout.addWidget(self.watch_table)
+        return group
+
+    def _build_var_watch_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(self._build_variable_watch_group(), 1)
+        row.addWidget(self._build_watch_group(), 1)
+        return row
 
     def _build_connection_group(self) -> QGroupBox:
         group = QGroupBox("连接")
@@ -217,6 +290,9 @@ class MainWindow(QMainWindow):
 
         self._session.debug_break.connect(self._on_debug_break)
         self._session.debug_resumed.connect(self._on_debug_resumed)
+        self._session.var_info.connect(self._on_var_info)
+        self._session.vars_complete.connect(self._on_vars_complete)
+        self._session.set_result.connect(self._on_set_result)
         self.debug_continue_btn.clicked.connect(lambda: self._session.send_debug_continue())
         self.debug_step_btn.clicked.connect(lambda: self._session.send_debug_step())
         self.debug_eval_btn.clicked.connect(self._on_eval_clicked)
@@ -491,9 +567,15 @@ class MainWindow(QMainWindow):
     def _on_debug_break(self, filename: str, line_no: int) -> None:
         self.debug_info_label.setText(f"已中断: 第{line_no}行")
         self._update_ui_state()
+        self.var_table.setRowCount(0)
+        self._watch_cache.clear()
+        self._set_watch_values_to_pending()
+        QTimer.singleShot(50, lambda: self._session.send_debug_vars())
 
     def _on_debug_resumed(self) -> None:
         self.debug_info_label.setText("调试未激活")
+        self.var_table.setRowCount(0)
+        self._set_watch_values_to_pending()
         self._update_ui_state()
 
     def _on_eval_clicked(self) -> None:
@@ -502,6 +584,145 @@ class MainWindow(QMainWindow):
             return
         if self._session.send_debug_eval(expr):
             self.debug_eval_input.clear()
+
+    def _on_var_info(self, name: str, type_char: str, value: str) -> None:
+        self._populating = True
+        row = self.var_table.rowCount()
+        self.var_table.insertRow(row)
+
+        name_item = QTableWidgetItem(name)
+        name_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        self.var_table.setItem(row, 0, name_item)
+
+        type_name = TYPE_MAP.get(type_char, type_char)
+        type_item = QTableWidgetItem(type_name)
+        type_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        self.var_table.setItem(row, 1, type_item)
+
+        value_item = QTableWidgetItem(value)
+        value_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsEditable)
+        self.var_table.setItem(row, 2, value_item)
+
+        self._populating = False
+
+        if name in self._watch_vars:
+            self._watch_cache[name] = (type_char, value)
+
+    def _on_vars_complete(self) -> None:
+        self.var_table.resizeColumnsToContents()
+        count = self.var_table.rowCount()
+        self.status_label.setText(f"变量监视: {count} 个变量")
+        self._refresh_watch_table()
+
+    def _on_set_result(self, success: bool, message: str) -> None:
+        if success:
+            self.status_label.setText("变量修改成功")
+            self._session.send_debug_vars()
+        else:
+            self.status_label.setText(f"变量修改失败: {message}")
+
+    def _on_var_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._populating:
+            return
+        if item.column() != 2:
+            return
+        name_item = self.var_table.item(item.row(), 0)
+        if name_item is None:
+            return
+        name = name_item.text()
+        new_value = item.text()
+        self._session.send_debug_set(name, new_value)
+
+    def _on_watch_add(self) -> None:
+        selected = self.var_table.selectedItems()
+        if not selected:
+            return
+        name = self.var_table.item(selected[0].row(), 0)
+        if name is None:
+            return
+        var_name = name.text()
+        if var_name in self._watch_vars:
+            return
+        self._watch_vars.add(var_name)
+        self._watch_prev[var_name] = ""
+        self._rebuild_watch_rows()
+
+    def _on_watch_remove(self) -> None:
+        selected = self.watch_table.selectedItems()
+        if not selected:
+            return
+        name_item = self.watch_table.item(selected[0].row(), 0)
+        if name_item is None:
+            return
+        var_name = name_item.text()
+        self._watch_vars.discard(var_name)
+        self._watch_prev.pop(var_name, None)
+        self._watch_cache.pop(var_name, None)
+        self._rebuild_watch_rows()
+
+    def _on_watch_clear_all(self) -> None:
+        self._watch_vars.clear()
+        self._watch_prev.clear()
+        self._watch_cache.clear()
+        self._rebuild_watch_rows()
+
+    def _set_watch_values_to_pending(self) -> None:
+        for row in range(self.watch_table.rowCount()):
+            item = self.watch_table.item(row, 2)
+            if item is not None:
+                item.setText("—")
+                item.setForeground(QColor("gray"))
+
+    def _rebuild_watch_rows(self) -> None:
+        self.watch_table.setRowCount(0)
+        for var_name in sorted(self._watch_vars):
+            row = self.watch_table.rowCount()
+            self.watch_table.insertRow(row)
+
+            name_item = QTableWidgetItem(var_name)
+            name_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            self.watch_table.setItem(row, 0, name_item)
+
+            type_item = QTableWidgetItem("—")
+            type_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            self.watch_table.setItem(row, 1, type_item)
+
+            value_item = QTableWidgetItem("—")
+            value_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            self.watch_table.setItem(row, 2, value_item)
+
+    def _refresh_watch_table(self) -> None:
+        for row in range(self.watch_table.rowCount()):
+            name_item = self.watch_table.item(row, 0)
+            if name_item is None:
+                continue
+            var_name = name_item.text()
+
+            if var_name in self._watch_cache:
+                type_char, cur_value = self._watch_cache[var_name]
+                prev_value = self._watch_prev.get(var_name, "")
+
+                type_item = self.watch_table.item(row, 1)
+                if type_item is not None:
+                    type_item.setText(TYPE_MAP.get(type_char, type_char))
+
+                value_item = self.watch_table.item(row, 2)
+                if value_item is not None:
+                    changed = (prev_value != "" and prev_value != cur_value)
+                    if changed:
+                        value_item.setText(f"{prev_value} → {cur_value}")
+                        value_item.setForeground(QColor("red"))
+                    else:
+                        value_item.setText(cur_value)
+                        value_item.setForeground(QColor("black"))
+
+                self._watch_prev[var_name] = cur_value
+            else:
+                value_item = self.watch_table.item(row, 2)
+                if value_item is not None:
+                    value_item.setText("—")
+                    value_item.setForeground(QColor("gray"))
+        self.watch_table.resizeColumnsToContents()
 
     @staticmethod
     def _bp_filename() -> str:
@@ -602,6 +823,8 @@ class MainWindow(QMainWindow):
         self._append_html_line(text, "#202020")
 
     def _append_remote_line(self, line: str) -> None:
+        if not line.strip():
+            return
         if self._should_filter_control_echo(line):
             return
 
@@ -640,7 +863,7 @@ class MainWindow(QMainWindow):
     def _should_filter_control_echo(line: str) -> bool:
         stripped = line.strip()
         if stripped in {":end", ":abort", ":ping", ":reset", ":pong", ":ok", ":ok ready",
-                        ":ok eval", ":ok bkpt", ":ok bkptclear", "load>"}:
+                        ":ok eval", ":ok bkpt", ":ok bkptclear", ":ok vars", ":ok set", "load>"}:
             return True
         if stripped.startswith(":load") or stripped.startswith(":err"):
             return True
@@ -649,6 +872,8 @@ class MainWindow(QMainWindow):
         if stripped in {":cont", ":step"}:
             return True
         if stripped.startswith(":eval "):
+            return True
+        if stripped.startswith(":var "):
             return True
         if stripped.startswith(":bkpt ") or stripped.startswith(":bkptclear "):
             return True

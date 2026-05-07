@@ -1,3 +1,20 @@
+/* PicoC 应用层 — 串口 REPL 交互与脚本加载引擎
+ *
+ * 本文件是 PicoC 解释器在 STM32H7 上的顶层应用，负责：
+ *   1. 初始化 PicoC 解释器实例并进入 REPL 交互循环
+ *   2. 通过 UART 串口接收用户输入（单行 REPL 或批量文件加载）
+ *   3. 解析结构化协议命令（:load / :end / :abort / :ping / :reset / :bkpt / :bkptclear）
+ *   4. 源码完整性分析（括号匹配、字符串/注释跟踪），支持多行输入
+ *   5. 自动识别表达式并包装为 printf 输出
+ *   6. 文件加载模式：逐行接收代码，完成后在隔离 PicoC 实例中执行
+ *
+ * 工作流程：
+ *   PicocApp_Init() → PICOC_APP_MODE_REPL
+ *   PicocApp_Task() 轮询 SerialApp_Read()
+ *     ├─ REPL 模式  → PicocApp_HandleReplChar() ／ PicocApp_ExecuteReplSource()
+ *     └─ LOAD 模式  → PicocApp_HandleLoadChar() ／ PicocApp_ExecuteLoadSource()
+ */
+
 #include "picoc_app.h"
 
 #include <string.h>
@@ -6,15 +23,22 @@
 #include "picoc.h"
 #include "interpreter.h"
 
+/* PicoC 解释器堆栈大小 */
 #define PICOC_APP_STACK_SIZE             (64 * 1024)
+/* 行缓冲区大小（接收单行输入） */
 #define PICOC_APP_SOURCE_BUFFER_SIZE     2048U
+/* 执行缓冲区大小（自动表达式包装用） */
 #define PICOC_APP_EXEC_BUFFER_SIZE       2304U
+/* 加载模式累积缓冲区大小 */
 #define PICOC_APP_LOAD_BUFFER_SIZE       8192U
+/* 每次轮询读取的 UART 数据块大小 */
 #define PICOC_APP_RX_CHUNK_SIZE          64U
+/* 加载模式提示符 */
 #define PICOC_APP_LOAD_PROMPT            "load> "
+/* 排空模式空闲计数阈值 */
 #define PICOC_APP_DRAIN_IDLE_THRESHOLD  10U
 
-/* --- structured protocol responses --- */
+/* --- 结构化协议响应字符串 --- */
 #define PICOC_APP_RESP_OK                ":ok\r\n"
 #define PICOC_APP_RESP_OK_READY          ":ok ready\r\n"
 #define PICOC_APP_RESP_PONG              ":pong\r\n"
@@ -23,25 +47,28 @@
 #define PICOC_APP_RESP_ERR_LINE_LONG     ":err line too long\r\n"
 #define PICOC_APP_RESP_ERR_LOAD_CANCELLED ":err load cancelled\r\n"
 
+/* 源码结构状态：跟踪括号深度、字符串/注释状态，用于判断语句完整性 */
 typedef struct
 {
-    int paren_depth;
-    int bracket_depth;
-    int brace_depth;
-    int in_string;
-    int in_char;
-    int in_block_comment;
-    int ends_with_do_block;
-    char last_non_space;
+    int paren_depth;        /* 圆括号 () 嵌套深度 */
+    int bracket_depth;      /* 方括号 [] 嵌套深度 */
+    int brace_depth;        /* 花括号 {} 嵌套深度 */
+    int in_string;          /* 是否在双引号字符串内 */
+    int in_char;            /* 是否在单引号字符字面量内 */
+    int in_block_comment;   /* 是否在块注释内 */
+    int ends_with_do_block; /* 是否以未闭合的 do 块结尾 */
+    char last_non_space;    /* 最后一个非空白字符 */
 } PicocApp_SourceState;
 
+/* 工作模式 */
 typedef enum
 {
-    PICOC_APP_MODE_REPL = 0,
-    PICOC_APP_MODE_LOAD,
-    PICOC_APP_MODE_DRAIN
+    PICOC_APP_MODE_REPL = 0,  /* REPL 交互模式 */
+    PICOC_APP_MODE_LOAD,      /* 文件加载模式 */
+    PICOC_APP_MODE_DRAIN      /* 排空模式（丢弃数据直到空闲） */
 } PicocApp_Mode;
 
+/* 协议命令类型 */
 typedef enum
 {
     PICOC_APP_COMMAND_NONE = 0,
@@ -54,6 +81,7 @@ typedef enum
     PICOC_APP_COMMAND_BKPTCLEAR
 } PicocApp_Command;
 
+/* 全局状态 */
 static Picoc g_picoc;
 static uint8_t g_source_buffer[PICOC_APP_SOURCE_BUFFER_SIZE];
 static uint8_t g_load_buffer[PICOC_APP_LOAD_BUFFER_SIZE];
@@ -65,6 +93,7 @@ static uint32_t g_drain_idle_count = 0U;
 static PicocApp_Mode g_mode = PICOC_APP_MODE_REPL;
 static const char *g_prompt_text = INTERACTIVE_PROMPT_STATEMENT;
 
+/* 前向声明 */
 static void PicocApp_WriteString(const char *text);
 static void PicocApp_WriteByte(uint8_t ch);
 static void PicocApp_SendResponse(const char *msg);
@@ -92,6 +121,7 @@ static const char *PicocApp_SkipLeadingSpace(const char *text);
 static const char *PicocApp_FindTrimmedEnd(const char *text);
 static int PicocApp_StartsWithKeyword(const char *text, const char *keyword);
 
+/* 初始化 PicoC 应用：创建解释器实例，发送启动提示符 */
 void PicocApp_Init(void)
 {
     PicocInitialise(&g_picoc, PICOC_APP_STACK_SIZE);
@@ -102,6 +132,11 @@ void PicocApp_Init(void)
     PicocApp_ShowPrompt();
 }
 
+/* 主循环任务：轮询串口接收数据并分发处理
+ *
+ * 应在大循环中反复调用，每次处理一批到达的 UART 字符。
+ * 同时检测提示符延迟发送条件（输入空闲时补发提示符）。
+ */
 void PicocApp_Task(void)
 {
     uint8_t rx_buffer[PICOC_APP_RX_CHUNK_SIZE];
@@ -112,6 +147,7 @@ void PicocApp_Task(void)
 
     if (g_mode == PICOC_APP_MODE_DRAIN)
     {
+        /* 排空模式：丢弃接收数据，空闲足够次数后回到 REPL */
         if (rx_len == 0U)
         {
             g_drain_idle_count++;
@@ -134,12 +170,14 @@ void PicocApp_Task(void)
         }
     }
 
+    /* 提示符延迟发送：在无新数据到达时补发提示符 */
     if (g_prompt_pending != 0U && rx_len == 0U)
     {
         PicocApp_ShowPrompt();
     }
 }
 
+/* 阻塞读取单个控制台字符（供 PicoC 平台层调用） */
 int PicocApp_ConsoleGetCharBlocking(void)
 {
     uint8_t ch;
@@ -151,6 +189,7 @@ int PicocApp_ConsoleGetCharBlocking(void)
     return (int)ch;
 }
 
+/* 通过串口发送一个字符串 */
 static void PicocApp_WriteString(const char *text)
 {
     if (text != NULL)
@@ -167,6 +206,7 @@ static void PicocApp_WriteString(const char *text)
     }
 }
 
+/* 通过串口发送单个字节 */
 static void PicocApp_WriteByte(uint8_t ch)
 {
     while (SerialApp_Write(&ch, 1U) == 0U)
@@ -174,17 +214,20 @@ static void PicocApp_WriteByte(uint8_t ch)
     }
 }
 
+/* 发送协议响应消息 */
 static void PicocApp_SendResponse(const char *msg)
 {
     PicocApp_WriteString(msg);
 }
 
+/* 显示当前提示符并清除挂起标志 */
 static void PicocApp_ShowPrompt(void)
 {
     PicocApp_WriteString(g_prompt_text);
     g_prompt_pending = 0U;
 }
 
+/* 字符分发器：根据当前模式将字符路由到对应的处理函数 */
 static void PicocApp_HandleChar(uint8_t ch)
 {
     if (ch == 0U)
@@ -192,6 +235,7 @@ static void PicocApp_HandleChar(uint8_t ch)
         return;
     }
 
+    /* 合并 \r\n 为单个换行 */
     if (ch == '\n' && g_last_char_was_cr != 0U)
     {
         g_last_char_was_cr = 0U;
@@ -214,6 +258,13 @@ static void PicocApp_HandleChar(uint8_t ch)
     }
 }
 
+/* REPL 模式字符处理
+ *
+ * 收到换行时：
+ *   1. 先检查是否为协议命令（:load / :ping / :reset / :bkpt / :bkptclear）
+ *   2. 非命令则进行源码完整性分析
+ *   3. 语句完整则立即执行，不完整则切换为续行提示符等待更多输入
+ */
 static void PicocApp_HandleReplChar(uint8_t ch)
 {
     if (ch == '\r' || ch == '\n')
@@ -284,6 +335,7 @@ static void PicocApp_HandleReplChar(uint8_t ch)
             return;
         }
 
+        /* 非命令，作为 C 代码处理 */
         PicocApp_WriteString("\r\n");
         (void)PicocApp_AppendByte(g_source_buffer, &g_source_length, sizeof(g_source_buffer), '\n');
         g_source_buffer[g_source_length] = '\0';
@@ -292,12 +344,14 @@ static void PicocApp_HandleReplChar(uint8_t ch)
 
         if (PicocApp_IsSourceComplete((const char *)g_source_buffer, &state) != 0)
         {
+            /* 语句完整，立即执行 */
             PicocApp_ExecuteReplSource();
             PicocApp_ResetSource();
             g_prompt_text = INTERACTIVE_PROMPT_STATEMENT;
         }
         else
         {
+            /* 语句不完整，等待续行 */
             g_prompt_text = INTERACTIVE_PROMPT_LINE;
         }
 
@@ -307,6 +361,7 @@ static void PicocApp_HandleReplChar(uint8_t ch)
 
     g_last_char_was_cr = 0U;
 
+    /* 退格处理 */
     if (ch == '\b' || ch == 0x7fU)
     {
         if (g_source_length > 0U)
@@ -318,6 +373,7 @@ static void PicocApp_HandleReplChar(uint8_t ch)
         return;
     }
 
+    /* 追加字符到行缓冲区 */
     if (PicocApp_AppendByte(g_source_buffer, &g_source_length, sizeof(g_source_buffer), ch) == 0)
     {
         PicocApp_SendResponse(PICOC_APP_RESP_ERR_LINE_LONG);
@@ -327,9 +383,17 @@ static void PicocApp_HandleReplChar(uint8_t ch)
         return;
     }
 
+    /* 回显 */
     PicocApp_WriteByte(ch);
 }
 
+/* 加载模式字符处理
+ *
+ * 收到换行时：
+ *   1. 检查协议控制命令（:load / :end / :abort / :ping / :reset / :bkpt / :bkptclear）
+ *   2. 非命令则作为代码行累积到加载缓冲区
+ *   3. 收到 :end 时执行累积的全部代码，收到 :abort 时丢弃并退出加载模式
+ */
 static void PicocApp_HandleLoadChar(uint8_t ch)
 {
     if (ch == '\r' || ch == '\n')
@@ -421,6 +485,7 @@ static void PicocApp_HandleLoadChar(uint8_t ch)
             return;
         }
 
+        /* 非命令，作为代码行累积到加载缓冲区 */
         if (PicocApp_AppendBlock(g_load_buffer,
                                  &g_load_length,
                                  sizeof(g_load_buffer),
@@ -470,6 +535,8 @@ static void PicocApp_HandleLoadChar(uint8_t ch)
     }
 }
 
+/* 向缓冲区追加一个字节，尾部保持空终止。
+ * 返回 1 表示成功，返回 0 表示缓冲区已满。 */
 static int PicocApp_AppendByte(uint8_t *buffer, uint32_t *length, uint32_t capacity, uint8_t ch)
 {
     if (*length >= (capacity - 1U))
@@ -483,6 +550,8 @@ static int PicocApp_AppendByte(uint8_t *buffer, uint32_t *length, uint32_t capac
     return 1;
 }
 
+/* 向缓冲区追加一个数据块，尾部保持空终止。
+ * 返回 1 表示成功，返回 0 表示缓冲区空间不足。 */
 static int PicocApp_AppendBlock(uint8_t *buffer, uint32_t *length, uint32_t capacity, const uint8_t *data, uint32_t size)
 {
     if ((*length + size) >= capacity)
@@ -496,23 +565,27 @@ static int PicocApp_AppendBlock(uint8_t *buffer, uint32_t *length, uint32_t capa
     return 1;
 }
 
+/* 重置行缓冲区（清空当前行输入） */
 static void PicocApp_ResetSource(void)
 {
     g_source_length = 0U;
     g_source_buffer[0] = '\0';
 }
 
+/* 重置加载累积缓冲区 */
 static void PicocApp_ResetLoadBuffer(void)
 {
     g_load_length = 0U;
     g_load_buffer[0] = '\0';
 }
 
+/* 重置行缓冲区（加载模式中也叫行缓冲区） */
 static void PicocApp_ResetLineBuffer(void)
 {
     PicocApp_ResetSource();
 }
 
+/* 进入文件加载模式 */
 static void PicocApp_EnterLoadMode(void)
 {
     g_mode = PICOC_APP_MODE_LOAD;
@@ -521,6 +594,7 @@ static void PicocApp_EnterLoadMode(void)
     PicocApp_ResetLoadBuffer();
 }
 
+/* 离开文件加载模式，回到 REPL */
 static void PicocApp_LeaveLoadMode(void)
 {
     g_mode = PICOC_APP_MODE_REPL;
@@ -529,11 +603,17 @@ static void PicocApp_LeaveLoadMode(void)
     PicocApp_ResetLoadBuffer();
 }
 
+/* 执行 REPL 累积的单行/多行源代码 */
 static void PicocApp_ExecuteReplSource(void)
 {
     PicocApp_RunSource(&g_picoc, "serial", (const char *)g_source_buffer, TRUE, FALSE);
 }
 
+/* 执行加载模式下累积的全部源代码
+ *
+ * 在隔离的 PicoC 实例中运行，执行完毕后清理实例并重置断点。
+ * 这样加载的脚本不会污染 REPL 全局环境。
+ */
 static void PicocApp_ExecuteLoadSource(void)
 {
     Picoc isolated_picoc;
@@ -551,6 +631,11 @@ static void PicocApp_ExecuteLoadSource(void)
     DebugClearAllBreakpoints(&g_picoc);
 }
 
+/* 运行源代码的核心逻辑
+ *
+ * auto_print_expression: 如果为 TRUE 且源码是表达式，自动包装为 printf 输出
+ * auto_call_main: 如果为 TRUE 且解析后产生了 main 函数，自动调用 main()
+ */
 static void PicocApp_RunSource(Picoc *pc, const char *file_name, const char *source, int auto_print_expression, int auto_call_main)
 {
     PicocApp_SourceState state;
@@ -565,6 +650,7 @@ static void PicocApp_RunSource(Picoc *pc, const char *file_name, const char *sou
 
     PicocApp_AnalyseSource(source, &state);
 
+    /* 表达式自动打印：包装为 printf("%d\n",(表达式)); */
     if (auto_print_expression != 0 && PicocApp_ShouldAutoPrintExpression(source, &state) != 0)
     {
         const char *start = PicocApp_SkipLeadingSpace(source);
@@ -594,6 +680,7 @@ static void PicocApp_RunSource(Picoc *pc, const char *file_name, const char *sou
                    TRUE);
         DebugCancelStep();
 
+        /* 如果解析产生了新的 main 函数且之前没有，则自动调用 */
         if (auto_call_main != 0 && had_main_before == 0 && PicocApp_HasMainFunction(pc) != 0)
         {
             PicocCallMain(pc, 0, NULL);
@@ -601,11 +688,14 @@ static void PicocApp_RunSource(Picoc *pc, const char *file_name, const char *sou
     }
 }
 
+/* 检查当前 PicoC 实例中是否已定义了 main 函数 */
 static int PicocApp_HasMainFunction(Picoc *pc)
 {
     return VariableDefined(pc, TableStrRegister(pc, "main"));
 }
 
+/* 解析协议命令：识别 :load / :ping / :reset / :end / :abort / :bkpt / :bkptclear
+ * 对于 :load 命令，同时解析可选的大小参数 */
 static PicocApp_Command PicocApp_ParseCommand(const uint8_t *buffer, uint32_t length, uint32_t *out_param)
 {
     uint32_t start = 0U;
@@ -613,12 +703,14 @@ static PicocApp_Command PicocApp_ParseCommand(const uint8_t *buffer, uint32_t le
 
     *out_param = 0U;
 
+    /* 去除前导空白 */
     while (start < length &&
            (buffer[start] == ' ' || buffer[start] == '\t' || buffer[start] == '\r' || buffer[start] == '\n'))
     {
         start++;
     }
 
+    /* 去除尾部空白 */
     while (end > start &&
            (buffer[end - 1U] == ' ' || buffer[end - 1U] == '\t' || buffer[end - 1U] == '\r' || buffer[end - 1U] == '\n'))
     {
@@ -627,7 +719,7 @@ static PicocApp_Command PicocApp_ParseCommand(const uint8_t *buffer, uint32_t le
 
     length = end - start;
 
-    /* :load [<size>] */
+    /* :load [<大小>] — 进入加载模式，可选大小参数用于预检查缓冲区 */
     if (length >= 5U && memcmp(&buffer[start], ":load", 5U) == 0)
     {
         if (length > 5U && (buffer[start + 5U] == ' ' || buffer[start + 5U] == '\t'))
@@ -679,6 +771,7 @@ static PicocApp_Command PicocApp_ParseCommand(const uint8_t *buffer, uint32_t le
     return PICOC_APP_COMMAND_NONE;
 }
 
+/* 处理断点设置/清除命令：解析 "文件名 行号" 参数并调用调试器接口 */
 static void PicocApp_HandleBkptCommand(const char *cmd_text, int set)
 {
     const char *ptr;
@@ -689,7 +782,7 @@ static void PicocApp_HandleBkptCommand(const char *cmd_text, int set)
     char *reg_file;
     struct ParseState bkpt_parser;
 
-    /* skip command prefix: ":bkpt " or ":bkptclear " */
+    /* 跳过命令前缀 ":bkpt " 或 ":bkptclear " */
     ptr = cmd_text + 6;
     if (!set)
         ptr += 5;
@@ -697,7 +790,7 @@ static void PicocApp_HandleBkptCommand(const char *cmd_text, int set)
     while (*ptr == ' ' || *ptr == '\t')
         ptr++;
 
-    /* extract filename */
+    /* 提取文件名 */
     filename_start = ptr;
     while (*ptr != ' ' && *ptr != '\t' && *ptr != '\0')
         ptr++;
@@ -710,7 +803,7 @@ static void PicocApp_HandleBkptCommand(const char *cmd_text, int set)
     memcpy(filename_buf, filename_start, (size_t)filename_len);
     filename_buf[filename_len] = '\0';
 
-    /* extract line number */
+    /* 提取行号 */
     while (*ptr == ' ' || *ptr == '\t')
         ptr++;
     line_no = 0;
@@ -740,6 +833,18 @@ static void PicocApp_HandleBkptCommand(const char *cmd_text, int set)
     PicocApp_SendResponse(set ? ":ok bkpt\r\n" : ":ok bkptclear\r\n");
 }
 
+/* 分析源码结构状态
+ *
+ * 遍历源码字符串，跟踪：
+ *   - 括号深度（圆括号、方括号、花括号）
+ *   - 字符串/字符字面量状态
+ *   - 行注释和块注释状态
+ *   - 最后一个非空白字符
+ *   - 是否以未闭合的 do 块结尾
+ *
+ * 这些信息用于判断输入是否构成完整的 C 语句，
+ * 以及是否应将输入作为表达式自动打印其值。
+ */
 static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *state)
 {
     uint32_t index;
@@ -753,6 +858,7 @@ static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *sta
         char ch = source[index];
         char next = source[index + 1U];
 
+        /* 行注释：持续到换行为止 */
         if (line_comment != 0)
         {
             if (ch == '\n')
@@ -762,6 +868,7 @@ static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *sta
             continue;
         }
 
+        /* 块注释：持续到 *‍/ 为止 */
         if (state->in_block_comment != 0)
         {
             if (ch == '*' && next == '/')
@@ -772,6 +879,7 @@ static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *sta
             continue;
         }
 
+        /* 字符串字面量内的字符 */
         if (state->in_string != 0)
         {
             if (escape != 0)
@@ -789,6 +897,7 @@ static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *sta
             continue;
         }
 
+        /* 字符字面量内的字符 */
         if (state->in_char != 0)
         {
             if (escape != 0)
@@ -806,6 +915,7 @@ static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *sta
             continue;
         }
 
+        /* 检测注释起始 */
         if (ch == '/' && next == '/')
         {
             line_comment = 1;
@@ -820,6 +930,7 @@ static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *sta
             continue;
         }
 
+        /* 检测字符串和字符字面量起始 */
         if (ch == '"')
         {
             state->in_string = 1;
@@ -832,6 +943,7 @@ static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *sta
             continue;
         }
 
+        /* 跟踪括号深度 */
         if (ch == '(')
         {
             state->paren_depth++;
@@ -857,12 +969,15 @@ static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *sta
             state->brace_depth--;
         }
 
+        /* 跟踪最后一个非空白字符 */
         if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
         {
             state->last_non_space = ch;
         }
     }
 
+    /* 检测 "do { ... }" 模式：如果花括号深度为零且最后一个非空白字符是 }，
+     * 且源码以 "do" 开头且没有 while，则标记为未闭合的 do 块 */
     if (state->brace_depth == 0 && state->last_non_space == '}')
     {
         const char *trimmed = PicocApp_SkipLeadingSpace(source);
@@ -874,6 +989,18 @@ static void PicocApp_AnalyseSource(const char *source, PicocApp_SourceState *sta
     }
 }
 
+/* 判断源码是否为完整的 C 语句（可以提交给解释器执行）
+ *
+ * 返回真（非零）如果：
+ *   - 输入为空
+ *   - 括号全部匹配且最后字符是 ; 或 } 或 # 预处理指令
+ *   - 是完整的表达式（可以自动打印）
+ *
+ * 返回假如果：
+ *   - 字符串/字符/注释未闭合
+ *   - 括号未匹配
+ *   - do 块缺少 while
+ */
 static int PicocApp_IsSourceComplete(const char *source, const PicocApp_SourceState *state)
 {
     const char *trimmed = PicocApp_SkipLeadingSpace(source);
@@ -911,6 +1038,18 @@ static int PicocApp_IsSourceComplete(const char *source, const PicocApp_SourceSt
     return PicocApp_ShouldAutoPrintExpression(source, state);
 }
 
+/* 判断源码是否应被视为表达式并自动打印其值
+ *
+ * 将输入包装为 printf("%d\n", (表达式)); 以便在 REPL 中
+ * 直接输入表达式即可看到结果。
+ *
+ * 排除以下情况：
+ *   - 以分号、花括号、冒号等结尾的语句
+ *   - 控制流关键字（if/for/while/switch/do 等）
+ *   - 类型声明关键字（int/char/struct 等）
+ *   - 预处理指令
+ *   - 包含花括号的代码块
+ */
 static int PicocApp_ShouldAutoPrintExpression(const char *source, const PicocApp_SourceState *state)
 {
     const char *trimmed = PicocApp_SkipLeadingSpace(source);
@@ -977,6 +1116,7 @@ static int PicocApp_ShouldAutoPrintExpression(const char *source, const PicocApp
     return 1;
 }
 
+/* 跳过字符串开头的空白字符（空格、制表符、回车、换行） */
 static const char *PicocApp_SkipLeadingSpace(const char *text)
 {
     while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n')
@@ -987,6 +1127,7 @@ static const char *PicocApp_SkipLeadingSpace(const char *text)
     return text;
 }
 
+/* 找到去除尾部空白后的字符串末尾位置 */
 static const char *PicocApp_FindTrimmedEnd(const char *text)
 {
     const char *end = text + strlen(text);
@@ -1004,6 +1145,8 @@ static const char *PicocApp_FindTrimmedEnd(const char *text)
     return end;
 }
 
+/* 检查字符串是否以指定关键字开头
+ * 关键字必须是完整的标识符（后续字符不能是字母、数字或下划线） */
 static int PicocApp_StartsWithKeyword(const char *text, const char *keyword)
 {
     uint32_t len = (uint32_t)strlen(keyword);

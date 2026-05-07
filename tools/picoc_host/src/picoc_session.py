@@ -27,6 +27,9 @@ class PicocSession(QObject):
     upload_state_changed = Signal(bool)
     debug_break = Signal(str, int)
     debug_resumed = Signal()
+    var_info = Signal(str, str, str)
+    vars_complete = Signal()
+    set_result = Signal(bool, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -194,6 +197,19 @@ class PicocSession(QObject):
         self.status_changed.emit(info)
         return True
 
+    def send_debug_vars(self) -> bool:
+        if not self._debug_active:
+            return False
+        self.send_requested.emit(":vars\r\n")
+        return True
+
+    def send_debug_set(self, name: str, value: str) -> bool:
+        if not self._debug_active:
+            return False
+        self.send_requested.emit(f":set {name} {value}\r\n")
+        self.status_changed.emit(f"设置变量: {name} = {value}")
+        return True
+
     def _on_debug_command_sent(self) -> None:
         if self._upload_job is not None:
             self._upload_job.debug_resume()
@@ -236,13 +252,28 @@ class PicocSession(QObject):
             self._handle_break_line(line, "step")
             return True
 
+        if line.startswith(":var "):
+            parts = line[5:].split(" ", 2)
+            if len(parts) >= 3:
+                self.var_info.emit(parts[1], parts[0], parts[2])
+            return True
+
         if line.startswith(":ok"):
             data = line[3:].strip()
+            if data == "vars":
+                self.vars_complete.emit()
+                return True
+            if data == "set":
+                self.set_result.emit(True, "")
+                return True
             self._dispatch_structured(":ok", data)
             return True
 
         if line.startswith(":err"):
             data = line[4:].strip()
+            if data.startswith("set "):
+                self.set_result.emit(False, data[4:])
+                return True
             self._dispatch_structured(":err", data)
             return True
 

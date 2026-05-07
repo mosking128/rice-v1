@@ -1,7 +1,9 @@
-/* picoc main header file - this has all the main data structures and 
+/* picoc main header file - this has all the main data structures and
  * function prototypes. If you're just calling picoc you should look at the
  * external interface instead, in picoc.h */
- 
+
+/* picoc 解释器内部头文件 — 包含所有核心数据结构、类型定义和模块函数声明 */
+
 #ifndef INTERPRETER_H
 #define INTERPRETER_H
 
@@ -60,26 +62,27 @@ struct Picoc_Struct;
 
 typedef struct Picoc_Struct Picoc;
 
+/* 词法分析 Token 类型 — 覆盖 C 语言所有运算符、关键字、字面量和预处理指令 */
 /* lexical tokens */
 enum LexToken
 {
-    /* 0x00 */ TokenNone, 
+    /* 0x00 */ TokenNone,
     /* 0x01 */ TokenComma,
     /* 0x02 */ TokenAssign, TokenAddAssign, TokenSubtractAssign, TokenMultiplyAssign, TokenDivideAssign, TokenModulusAssign,
     /* 0x08 */ TokenShiftLeftAssign, TokenShiftRightAssign, TokenArithmeticAndAssign, TokenArithmeticOrAssign, TokenArithmeticExorAssign,
-    /* 0x0d */ TokenQuestionMark, TokenColon, 
-    /* 0x0f */ TokenLogicalOr, 
-    /* 0x10 */ TokenLogicalAnd, 
-    /* 0x11 */ TokenArithmeticOr, 
-    /* 0x12 */ TokenArithmeticExor, 
-    /* 0x13 */ TokenAmpersand, 
-    /* 0x14 */ TokenEqual, TokenNotEqual, 
+    /* 0x0d */ TokenQuestionMark, TokenColon,
+    /* 0x0f */ TokenLogicalOr,
+    /* 0x10 */ TokenLogicalAnd,
+    /* 0x11 */ TokenArithmeticOr,
+    /* 0x12 */ TokenArithmeticExor,
+    /* 0x13 */ TokenAmpersand,
+    /* 0x14 */ TokenEqual, TokenNotEqual,
     /* 0x16 */ TokenLessThan, TokenGreaterThan, TokenLessEqual, TokenGreaterEqual,
-    /* 0x1a */ TokenShiftLeft, TokenShiftRight, 
-    /* 0x1c */ TokenPlus, TokenMinus, 
+    /* 0x1a */ TokenShiftLeft, TokenShiftRight,
+    /* 0x1c */ TokenPlus, TokenMinus,
     /* 0x1e */ TokenAsterisk, TokenSlash, TokenModulus,
     /* 0x21 */ TokenIncrement, TokenDecrement, TokenUnaryNot, TokenUnaryExor, TokenSizeof, TokenCast,
-    /* 0x27 */ TokenLeftSquareBracket, TokenRightSquareBracket, TokenDot, TokenArrow, 
+    /* 0x27 */ TokenLeftSquareBracket, TokenRightSquareBracket, TokenDot, TokenArrow,
     /* 0x2b */ TokenOpenBracket, TokenCloseBracket,
     /* 0x2d */ TokenIdentifier, TokenIntegerConstant, TokenFPConstant, TokenStringConstant, TokenCharacterConstant,
     /* 0x32 */ TokenSemicolon, TokenEllipsis,
@@ -93,6 +96,7 @@ enum LexToken
     /* 0x5c */ TokenEOF, TokenEndOfLine, TokenEndOfFunction
 };
 
+/* 动态内存分配节点 — 空闲链表中的一个块 */
 /* used in dynamic memory allocation */
 struct AllocNode
 {
@@ -100,6 +104,7 @@ struct AllocNode
     struct AllocNode *NextFree;
 };
 
+/* 解析运行模式 — 控制解析器是正常执行还是跳过代码（如 if/else 分支） */
 /* whether we're running or skipping code */
 enum RunMode
 {
@@ -112,6 +117,7 @@ enum RunMode
     RunModeGoto                 /* searching for a goto label */
 };
 
+/* 解析器状态 — 记录当前解析位置、行号、运行模式等信息，支持文件嵌套包含 */
 /* parser state - has all this detail so we can parse nested files */
 struct ParseState
 {
@@ -130,6 +136,7 @@ struct ParseState
     int ScopeID;                /* for keeping track of local variables (free them after they go out of scope) */
 };
 
+/* 基础类型枚举 — 覆盖 C 语言所有基本类型（整数、浮点、指针、数组、结构体等） */
 /* values */
 enum BaseType
 {
@@ -156,6 +163,7 @@ enum BaseType
     Type_Type                   /* a type for storing types */
 };
 
+/* 类型描述符 — 记录类型的基类、大小、对齐、成员表等元信息，支持类型派生链表 */
 /* data type */
 struct ValueType
 {
@@ -172,6 +180,7 @@ struct ValueType
     int StaticQualifier;            /* true if it's a static */
 };
 
+/* 函数定义 — 包含返回类型、参数列表、变参标志、内联函数指针或函数体 */
 /* function definition */
 struct FuncDef
 {
@@ -184,6 +193,7 @@ struct FuncDef
     struct ParseState Body;         /* lexical tokens of the function body if not intrinsic */
 };
 
+/* 宏定义 — 包含参数名列表和宏体 Token 序列 */
 /* macro definition */
 struct MacroDef
 {
@@ -192,6 +202,7 @@ struct MacroDef
     struct ParseState Body;         /* lexical tokens of the function body if not intrinsic */
 };
 
+/* 联合体：存储任意类型的实际值数据 */
 /* values */
 union AnyValue
 {
@@ -214,6 +225,7 @@ union AnyValue
     void *Pointer;                  /* unsafe native pointers */
 };
 
+/* 运行时值 — 带类型标签的值容器，记录 LValue、作用域、内存来源等属性 */
 struct Value
 {
     struct ValueType *Typ;          /* the type of this value */
@@ -227,6 +239,7 @@ struct Value
     char OutOfScope;
 };
 
+/* 哈希表条目 — 支持变量存储、字符串表和断点表三种用途 */
 /* hash table data structure */
 struct TableEntry
 {
@@ -242,19 +255,20 @@ struct TableEntry
             char *Key;              /* points to the shared string table */
             struct Value *Val;      /* the value we're storing */
         } v;                        /* used for tables of values */
-        
+
         char Key[1];                /* dummy size - used for the shared string table */
-        
+
         struct BreakpointEntry      /* defines a breakpoint */
         {
             const char *FileName;
             short int Line;
             short int CharacterPos;
         } b;
-        
+
     } p;
 };
-    
+
+/* 哈希表 — 用于全局变量表、局部变量表、字符串表等 */
 struct Table
 {
     short Size;
@@ -262,6 +276,7 @@ struct Table
     struct TableEntry **HashTable;
 };
 
+/* 栈帧 — 每次函数调用创建一个栈帧，记录返回点、函数名、参数和局部变量表 */
 /* stack frame for function calls */
 struct StackFrame
 {
@@ -275,6 +290,7 @@ struct StackFrame
     struct StackFrame *PreviousStackFrame;  /* the next lower stack frame */
 };
 
+/* 词法分析器模式 — 控制普通代码、#include、#define 等不同上下文下的词法解析行为 */
 /* lexer state */
 enum LexMode
 {
@@ -285,6 +301,7 @@ enum LexMode
     LexModeHashDefineSpaceIdent
 };
 
+/* 词法分析器状态 — 记录当前扫描位置、行号、模式等上下文 */
 struct LexState
 {
     const char *Pos;
@@ -297,6 +314,7 @@ struct LexState
     int EmitExtraNewlines;
 };
 
+/* 库函数定义 — 绑定 C 函数指针与原型字符串，用于注册内置库函数 */
 /* library function definition */
 struct LibraryFunction
 {
@@ -304,6 +322,7 @@ struct LibraryFunction
     const char *Prototype;
 };
 
+/* 输出流状态信息 — 支持控制台输出和字符串输出（如 sprintf） */
 /* output stream-type specific state information */
 union OutputStreamInfo
 {
@@ -314,9 +333,11 @@ union OutputStreamInfo
     } Str;
 };
 
+/* 字符输出函数指针类型 */
 /* stream-specific method for writing characters to the console */
 typedef void CharWriter(unsigned char, union OutputStreamInfo *);
 
+/* 输出流 — 封装字符输出方法和流状态 */
 /* used when writing output to a string - eg. sprintf() */
 struct OutputStream
 {
@@ -324,9 +345,11 @@ struct OutputStream
     union OutputStreamInfo i;
 };
 
+/* 解析结果枚举 */
 /* possible results of parsing a statement */
 enum ParseResult { ParseResultEOF, ParseResultError, ParseResultOk };
 
+/* Token 清理链表节点 — 记录需要释放的堆分配 Token 和源码 */
 /* a chunk of heap-allocated tokens we'll cleanup when we're done */
 struct CleanupTokenNode
 {
@@ -335,6 +358,7 @@ struct CleanupTokenNode
     struct CleanupTokenNode *Next;
 };
 
+/* 交互模式 Token 行链表 — 存储用户逐行输入的已解析 Token */
 /* linked list of lexical tokens used in interactive mode */
 struct TokenLine
 {
@@ -344,6 +368,7 @@ struct TokenLine
 };
 
 
+/* 可注册的库 — 包含库名、初始化函数、函数列表和可选的 C 源码 */
 /* a list of libraries we can include */
 struct IncludeLibrary
 {
@@ -359,6 +384,7 @@ struct IncludeLibrary
 #define BREAKPOINT_TABLE_SIZE 21
 
 
+/* picoc 解释器实例 — 持有解析器、词法分析器、栈、堆、类型表、调试器等全部运行时状态 */
 /* the entire state of the picoc system */
 struct Picoc_Struct
 {
@@ -366,7 +392,7 @@ struct Picoc_Struct
     struct Table GlobalTable;
     struct CleanupTokenNode *CleanupTokenList;
     struct TableEntry *GlobalHashTable[GLOBAL_TABLE_SIZE];
-    
+
     /* lexer global data */
     struct TokenLine *InteractiveHead;
     struct TokenLine *InteractiveTail;
@@ -380,7 +406,7 @@ struct Picoc_Struct
     /* the table of string literal values */
     struct Table StringLiteralTable;
     struct TableEntry *StringLiteralHashTable[STRING_LITERAL_TABLE_SIZE];
-    
+
     /* the stack */
     struct StackFrame *TopStackFrame;
 
@@ -414,7 +440,7 @@ struct Picoc_Struct
     struct AllocNode *FreeListBucket[FREELIST_BUCKETS];      /* we keep a pool of freelist buckets to reduce fragmentation */
     struct AllocNode *FreeListBig;                           /* free memory which doesn't fit in a bucket */
 
-    /* types */    
+    /* types */
     struct ValueType UberType;
     struct ValueType IntType;
     struct ValueType ShortType;
@@ -443,7 +469,7 @@ struct Picoc_Struct
     struct TableEntry *BreakpointHashTable[BREAKPOINT_TABLE_SIZE];
     int BreakpointCount;
     int DebugManualBreak;
-    
+
     /* C library */
     int BigEndian;
     int LittleEndian;
@@ -453,7 +479,7 @@ struct Picoc_Struct
 
     /* the picoc version string */
     const char *VersionString;
-    
+
     /* exit longjump buffer */
 #if defined(UNIX_HOST) || defined(WIN32) || defined(STM32H750_HOST)
     jmp_buf PicocExitBuf;
@@ -461,7 +487,7 @@ struct Picoc_Struct
 #ifdef SURVEYOR_HOST
     int PicocExitBuf[41];
 #endif
-    
+
     /* string table */
     struct Table StringTable;
     struct TableEntry *StringHashTable[STRING_TABLE_SIZE];
@@ -610,7 +636,7 @@ void IncludeRegister(Picoc *pc, const char *IncludeName, void (*SetupFunction)(P
 void IncludeFile(Picoc *pc, char *Filename);
 /* the following is defined in picoc.h:
  * void PicocIncludeAllSystemHeaders(); */
- 
+
 /* debug.c */
 void DebugInit(Picoc *pc);
 void DebugCleanup(Picoc *pc);

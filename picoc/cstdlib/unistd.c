@@ -1,4 +1,27 @@
-/* stdlib.h library for large systems - small embedded systems use clibrary.c instead */
+/* ============================================================================
+ * unistd.c - PicoC POSIX 系统调用库 (unistd.h)
+ *
+ * 为 PicoC 解释器提供 POSIX <unistd.h> 头文件中定义的系统调用封装，
+ * 涵盖文件 I/O、进程控制、用户/组管理、目录操作等功能。
+ *
+ * 功能分组:
+ *   - 文件 I/O:     open / close / read / write / lseek / dup / dup2 / fsync /
+ *                   ftruncate / truncate / fdatasync / lockf
+ *   - 文件系统:     access / chdir / chroot / link / unlink / readlink /
+ *                   symlink / rmdir / remove
+ *   - 进程控制:     fork / vfork / _exit / pause / alarm / sleep / usleep /
+ *                   nice / setsid / setpgrp
+ *   - 用户/组:      getuid / geteuid / getgid / getegid / setuid / setgid /
+ *                   chown / fchown
+ *   - 进程标识:     getpid / getppid / getpgrp / getsid / tcgetpgrp / tcsetpgrp
+ *   - 终端:         isatty / ttyname / ctermid
+ *   - 系统配置:     sysconf / pathconf / fpathconf / confstr / getpagesize
+ *   - 其他:         getcwd / getwd / sbrk / sync / getlogin / gethostid
+ *
+ * 条件编译: WIN32 下部分函数行为不同。
+ * 仅在未定义 BUILTIN_MINI_STDLIB 时编译 (嵌入式平台不包含)。
+ * ============================================================================ */
+
 #include "../interpreter.h"
 #ifndef BUILTIN_MINI_STDLIB
 
@@ -9,238 +32,457 @@
 
 static int ZeroValue = 0;
 
+/* =========================================================================
+ * 文件/目录访问函数
+ * ========================================================================= */
+
+/* access: 检查文件的可访问性 (R_OK/W_OK/X_OK/F_OK) */
 void UnistdAccess(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = access(Param[0]->Val->Pointer, Param[1]->Val->Integer);
 }
 
-void UnistdAlarm(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = alarm(Param[0]->Val->Integer);
-}
-
+/* chdir: 改变当前工作目录 */
 void UnistdChdir(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = chdir(Param[0]->Val->Pointer);
 }
 
+/* chroot: 改变根目录 (需要 root 权限) */
 void UnistdChroot(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = chroot(Param[0]->Val->Pointer);
 }
 
+/* chown: 改变文件所有者和组 */
 void UnistdChown(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = chown(Param[0]->Val->Pointer, Param[1]->Val->Integer, Param[2]->Val->Integer);
 }
 
-void UnistdClose(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = close(Param[0]->Val->Integer);
-}
-
-void UnistdConfstr(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = confstr(Param[0]->Val->Integer, Param[1]->Val->Pointer, Param[2]->Val->Integer);
-}
-
-void UnistdCtermid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Pointer = ctermid(Param[0]->Val->Pointer);
-}
-
-#if 0
-void UnistdCuserid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Pointer = cuserid(Param[0]->Val->Pointer);
-}
-#endif
-
-void UnistdDup(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = dup(Param[0]->Val->Integer);
-}
-
-void UnistdDup2(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = dup2(Param[0]->Val->Integer, Param[1]->Val->Integer);
-}
-
-void Unistd_Exit(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    _exit(Param[0]->Val->Integer);
-}
-
+/* fchown: 通过文件描述符改变文件所有者和组 */
 void UnistdFchown(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = fchown(Param[0]->Val->Integer, Param[1]->Val->Integer, Param[2]->Val->Integer);
 }
 
+/* lchown: 改变符号链接本身的所有者 (不跟随链接) */
+void UnistdLchown(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = lchown(Param[0]->Val->Pointer, Param[1]->Val->Integer, Param[2]->Val->Integer);
+}
+
+/* fchdir: 通过文件描述符改变工作目录 */
 void UnistdFchdir(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = fchdir(Param[0]->Val->Integer);
 }
 
-void UnistdFdatasync(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+/* link: 创建硬链接 */
+void UnistdLink(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-#ifndef F_FULLSYNC
-    ReturnValue->Val->Integer = fdatasync(Param[0]->Val->Integer);
-#else
-    /* Mac OS X equivalent */
-    ReturnValue->Val->Integer = fcntl(Param[0]->Val->Integer, F_FULLFSYNC);
-#endif
+    ReturnValue->Val->Integer = link(Param[0]->Val->Pointer, Param[1]->Val->Pointer);
 }
 
-void UnistdFork(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+/* unlink: 删除文件名 (硬链接) */
+void UnistdUnlink(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Integer = fork();
+    ReturnValue->Val->Integer = unlink(Param[0]->Val->Pointer);
 }
 
-void UnistdFpathconf(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+/* readlink: 读取符号链接的目标路径 */
+void UnistdReadlink(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Integer = fpathconf(Param[0]->Val->Integer, Param[1]->Val->Integer);
+    ReturnValue->Val->Integer = readlink(Param[0]->Val->Pointer, Param[1]->Val->Pointer, Param[2]->Val->Integer);
 }
 
+/* symlink: 创建符号链接 */
+void UnistdSymlink(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = symlink(Param[0]->Val->Pointer, Param[1]->Val->Pointer);
+}
+
+/* rmdir: 删除空目录 */
+void UnistdRmdir(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = rmdir(Param[0]->Val->Pointer);
+}
+
+/* =========================================================================
+ * 文件 I/O 函数
+ * ========================================================================= */
+
+/* close: 关闭文件描述符 */
+void UnistdClose(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = close(Param[0]->Val->Integer);
+}
+
+/* read: 从文件描述符读取数据 */
+void UnistdRead(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = read(Param[0]->Val->Integer, Param[1]->Val->Pointer, Param[2]->Val->Integer);
+}
+
+/* write: 向文件描述符写入数据 */
+void UnistdWrite(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = write(Param[0]->Val->Integer, Param[1]->Val->Pointer, Param[2]->Val->Integer);
+}
+
+/* lseek: 移动文件读写位置指针 */
+void UnistdLseek(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = lseek(Param[0]->Val->Integer, Param[1]->Val->Integer, Param[2]->Val->Integer);
+}
+
+/* dup: 复制文件描述符 */
+void UnistdDup(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = dup(Param[0]->Val->Integer);
+}
+
+/* dup2: 复制文件描述符到指定编号 */
+void UnistdDup2(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = dup2(Param[0]->Val->Integer, Param[1]->Val->Integer);
+}
+
+/* fsync: 将文件描述符的缓冲区同步到磁盘 */
 void UnistdFsync(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = fsync(Param[0]->Val->Integer);
 }
 
+/* fdatasync: 将文件数据 (不含元数据) 同步到磁盘 */
+void UnistdFdatasync(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+#ifndef F_FULLSYNC
+    ReturnValue->Val->Integer = fdatasync(Param[0]->Val->Integer);
+#else
+    /* Mac OS X 等效实现 */
+    ReturnValue->Val->Integer = fcntl(Param[0]->Val->Integer, F_FULLFSYNC);
+#endif
+}
+
+/* ftruncate: 将文件截断为指定长度 */
 void UnistdFtruncate(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = ftruncate(Param[0]->Val->Integer, Param[1]->Val->Integer);
 }
 
-void UnistdGetcwd(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+/* truncate: 将文件 (按路径名) 截断为指定长度 */
+void UnistdTruncate(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Pointer = getcwd(Param[0]->Val->Pointer, Param[1]->Val->Integer);
+    ReturnValue->Val->Integer = truncate(Param[0]->Val->Pointer, Param[1]->Val->Integer);
 }
 
-void UnistdGetdtablesize(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+/* lockf: 对文件区域加锁/解锁 */
+void UnistdLockf(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Integer = getdtablesize();
+    ReturnValue->Val->Integer = lockf(Param[0]->Val->Integer, Param[1]->Val->Integer, Param[2]->Val->Integer);
 }
 
-void UnistdGetegid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+/* =========================================================================
+ * 进程控制函数
+ * ========================================================================= */
+
+/* alarm: 设置闹钟信号 (seconds 秒后发送 SIGALRM) */
+void UnistdAlarm(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Integer = getegid();
+    ReturnValue->Val->Integer = alarm(Param[0]->Val->Integer);
 }
 
+/* ualarm: 微秒级别的闹钟 (useconds 后首次触发，之后每 interval 触发) */
+void UnistdUalarm(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = ualarm(Param[0]->Val->Integer, Param[1]->Val->Integer);
+}
+
+/* sleep: 挂起进程指定秒数 */
+void UnistdSleep(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = sleep(Param[0]->Val->Integer);
+}
+
+/* usleep: 挂起进程指定微秒数 */
+void UnistdUsleep(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = usleep(Param[0]->Val->Integer);
+}
+
+/* pause: 挂起进程直到收到信号 */
+void UnistdPause(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = pause();
+}
+
+/* fork: 创建子进程 (复制当前进程) */
+void UnistdFork(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = fork();
+}
+
+/* vfork: 创建子进程 (共享地址空间，不推荐使用) */
+void UnistdVfork(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = vfork();
+}
+
+/* _exit: 立即终止进程 (不调用 atexit 处理函数) */
+void Unistd_Exit(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    _exit(Param[0]->Val->Integer);
+}
+
+/* nice: 修改进程调度优先级 */
+void UnistdNice(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = nice(Param[0]->Val->Integer);
+}
+
+/* setsid: 创建新会话并将进程设为会话组长 */
+void UnistdSetsid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = setsid();
+}
+
+/* setpgrp: 设置进程组 (无参数版本) */
+void UnistdSetpgrp(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = setpgrp();
+}
+
+/* setpgid: 设置进程组 ID */
+void UnistdSetpgid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = setpgid(Param[0]->Val->Integer, Param[1]->Val->Integer);
+}
+
+/* =========================================================================
+ * 进程/用户标识函数
+ * ========================================================================= */
+
+/* getpid: 获取当前进程 ID */
+void UnistdGetpid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = getpid();
+}
+
+/* getppid: 获取父进程 ID */
+void UnistdGetppid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = getppid();
+}
+
+/* getpgrp: 获取进程组 ID */
+void UnistdGetpgrp(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = getpgrp();
+}
+
+/* getuid: 获取实际用户 ID */
+void UnistdGetuid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = getuid();
+}
+
+/* geteuid: 获取有效用户 ID */
 void UnistdGeteuid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = geteuid();
 }
 
+/* getgid: 获取实际组 ID */
 void UnistdGetgid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = getgid();
 }
 
-void UnistdGethostid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+/* getegid: 获取有效组 ID */
+void UnistdGetegid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Integer = gethostid();
+    ReturnValue->Val->Integer = getegid();
 }
 
-void UnistdGetlogin(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+/* setuid: 设置用户 ID */
+void UnistdSetuid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Pointer = getlogin();
+    ReturnValue->Val->Integer = setuid(Param[0]->Val->Integer);
 }
 
-void UnistdGetlogin_r(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+/* setgid: 设置组 ID */
+void UnistdSetgid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
-    ReturnValue->Val->Integer = getlogin_r(Param[0]->Val->Pointer, Param[1]->Val->Integer);
+    ReturnValue->Val->Integer = setgid(Param[0]->Val->Integer);
 }
 
+/* setreuid: 设置实际和有效用户 ID */
+void UnistdSetreuid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = setreuid(Param[0]->Val->Integer, Param[1]->Val->Integer);
+}
+
+/* setregid: 设置实际和有效组 ID */
+void UnistdSetregid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = setregid(Param[0]->Val->Integer, Param[1]->Val->Integer);
+}
+
+/* =========================================================================
+ * 终端相关函数
+ * ========================================================================= */
+
+/* isatty: 检查文件描述符是否指向终端 */
+void UnistdIsatty(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = isatty(Param[0]->Val->Integer);
+}
+
+/* ttyname: 获取终端设备名称 */
+void UnistdTtyname(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Pointer = ttyname(Param[0]->Val->Integer);
+}
+
+/* ttyname_r: 获取终端设备名称 (可重入版本) */
+void UnistdTtyname_r(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = ttyname_r(Param[0]->Val->Integer, Param[1]->Val->Pointer, Param[2]->Val->Integer);
+}
+
+/* ctermid: 获取控制终端名称 */
+void UnistdCtermid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Pointer = ctermid(Param[0]->Val->Pointer);
+}
+
+/* tcgetpgrp: 获取终端关联的前台进程组 ID */
+void UnistdTcgetpgrp(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = tcgetpgrp(Param[0]->Val->Integer);
+}
+
+/* tcsetpgrp: 设置终端关联的前台进程组 */
+void UnistdTcsetpgrp(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = tcsetpgrp(Param[0]->Val->Integer, Param[1]->Val->Integer);
+}
+
+/* =========================================================================
+ * 目录和路径函数
+ * ========================================================================= */
+
+/* getcwd: 获取当前工作目录的绝对路径 */
+void UnistdGetcwd(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Pointer = getcwd(Param[0]->Val->Pointer, Param[1]->Val->Integer);
+}
+
+/* getwd: 获取当前工作目录 (危险，无缓冲区溢出保护) */
+void UnistdGetwd(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Pointer = getcwd(Param[0]->Val->Pointer, PATH_MAX);
+}
+
+/* =========================================================================
+ * 系统和配置函数
+ * ========================================================================= */
+
+/* sysconf: 获取系统配置参数 (处理器数、页大小等) */
+void UnistdSysconf(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = sysconf(Param[0]->Val->Integer);
+}
+
+/* pathconf: 获取路径相关的配置参数 */
+void UnistdPathconf(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = pathconf(Param[0]->Val->Pointer, Param[1]->Val->Integer);
+}
+
+/* fpathconf: 获取文件描述符相关的配置参数 */
+void UnistdFpathconf(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = fpathconf(Param[0]->Val->Integer, Param[1]->Val->Integer);
+}
+
+/* confstr: 获取字符串类型的系统配置值 */
+void UnistdConfstr(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = confstr(Param[0]->Val->Integer, Param[1]->Val->Pointer, Param[2]->Val->Integer);
+}
+
+/* getpagesize: 获取系统页大小 (字节数) */
 void UnistdGetpagesize(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = getpagesize();
 }
 
+/* getdtablesize: 获取文件描述符表的最大大小 */
+void UnistdGetdtablesize(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = getdtablesize();
+}
+
+/* =========================================================================
+ * 其他函数
+ * ========================================================================= */
+
+/* sbrk: 调整程序数据段大小 (增加 heap) */
+void UnistdSbrk(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Pointer = sbrk(Param[0]->Val->Integer);
+}
+
+/* sync: 将所有文件系统缓冲区同步到磁盘 */
+void UnistdSync(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    sync();
+}
+
+/* getlogin: 获取当前登录用户名 */
+void UnistdGetlogin(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Pointer = getlogin();
+}
+
+/* getlogin_r: 获取当前登录用户名 (可重入版本) */
+void UnistdGetlogin_r(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = getlogin_r(Param[0]->Val->Pointer, Param[1]->Val->Integer);
+}
+
+/* gethostid: 获取当前主机的唯一标识符 */
+void UnistdGethostid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Integer = gethostid();
+}
+
+/* getpass: 从终端读取密码 (不回显) */
 void UnistdGetpass(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Pointer = getpass(Param[0]->Val->Pointer);
 }
 
 #if 0
+/* 以下函数暂时禁用 (未测试或平台不兼容) */
+
+void UnistdCuserid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
+{
+    ReturnValue->Val->Pointer = cuserid(Param[0]->Val->Pointer);
+}
+
 void UnistdGetpgid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = getpgid(Param[0]->Val->Integer);
 }
-#endif
 
-void UnistdGetpgrp(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = getpgrp();
-}
-
-void UnistdGetpid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = getpid();
-}
-
-void UnistdGetppid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = getppid();
-}
-
-#if 0
 void UnistdGetsid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = getsid(Param[0]->Val->Integer);
 }
-#endif
 
-void UnistdGetuid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = getuid();
-}
-
-void UnistdGetwd(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Pointer = getcwd(Param[0]->Val->Pointer, PATH_MAX);
-}
-
-void UnistdIsatty(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = isatty(Param[0]->Val->Integer);
-}
-
-void UnistdLchown(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = lchown(Param[0]->Val->Pointer, Param[1]->Val->Integer, Param[2]->Val->Integer);
-}
-
-void UnistdLink(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = link(Param[0]->Val->Pointer, Param[1]->Val->Pointer);
-}
-
-void UnistdLockf(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = lockf(Param[0]->Val->Integer, Param[1]->Val->Integer, Param[2]->Val->Integer);
-}
-
-void UnistdLseek(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = lseek(Param[0]->Val->Integer, Param[1]->Val->Integer, Param[2]->Val->Integer);
-}
-
-void UnistdNice(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = nice(Param[0]->Val->Integer);
-}
-
-void UnistdPathconf(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = pathconf(Param[0]->Val->Pointer, Param[1]->Val->Integer);
-}
-
-void UnistdPause(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = pause();
-}
-
-#if 0
 void UnistdPread(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = pread(Param[0]->Val->Integer, Param[1]->Val->Pointer, Param[2]->Val->Integer, Param[3]->Val->Integer);
@@ -250,142 +492,15 @@ void UnistdPwrite(struct ParseState *Parser, struct Value *ReturnValue, struct V
 {
     ReturnValue->Val->Integer = pwrite(Param[0]->Val->Integer, Param[1]->Val->Pointer, Param[2]->Val->Integer, Param[3]->Val->Integer);
 }
-#endif
 
-void UnistdRead(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = read(Param[0]->Val->Integer, Param[1]->Val->Pointer, Param[2]->Val->Integer);
-}
-
-void UnistdReadlink(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = readlink(Param[0]->Val->Pointer, Param[1]->Val->Pointer, Param[2]->Val->Integer);
-}
-
-void UnistdRmdir(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = rmdir(Param[0]->Val->Pointer);
-}
-
-void UnistdSbrk(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Pointer = sbrk(Param[0]->Val->Integer);
-}
-
-void UnistdSetgid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = setgid(Param[0]->Val->Integer);
-}
-
-void UnistdSetpgid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = setpgid(Param[0]->Val->Integer, Param[1]->Val->Integer);
-}
-
-void UnistdSetpgrp(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = setpgrp();
-}
-
-void UnistdSetregid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = setregid(Param[0]->Val->Integer, Param[1]->Val->Integer);
-}
-
-void UnistdSetreuid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = setreuid(Param[0]->Val->Integer, Param[1]->Val->Integer);
-}
-
-void UnistdSetsid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = setsid();
-}
-
-void UnistdSetuid(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = setuid(Param[0]->Val->Integer);
-}
-
-void UnistdSleep(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = sleep(Param[0]->Val->Integer);
-}
-
-#if 0
 void UnistdSwab(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
 {
     ReturnValue->Val->Integer = swab(Param[0]->Val->Pointer, Param[1]->Val->Pointer, Param[2]->Val->Integer);
 }
 #endif
 
-void UnistdSymlink(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = symlink(Param[0]->Val->Pointer, Param[1]->Val->Pointer);
-}
 
-void UnistdSync(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    sync();
-}
-
-void UnistdSysconf(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = sysconf(Param[0]->Val->Integer);
-}
-
-void UnistdTcgetpgrp(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = tcgetpgrp(Param[0]->Val->Integer);
-}
-
-void UnistdTcsetpgrp(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = tcsetpgrp(Param[0]->Val->Integer, Param[1]->Val->Integer);
-}
-
-void UnistdTruncate(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = truncate(Param[0]->Val->Pointer, Param[1]->Val->Integer);
-}
-
-void UnistdTtyname(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Pointer = ttyname(Param[0]->Val->Integer);
-}
-
-void UnistdTtyname_r(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = ttyname_r(Param[0]->Val->Integer, Param[1]->Val->Pointer, Param[2]->Val->Integer);
-}
-
-void UnistdUalarm(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = ualarm(Param[0]->Val->Integer, Param[1]->Val->Integer);
-}
-
-void UnistdUnlink(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = unlink(Param[0]->Val->Pointer);
-}
-
-void UnistdUsleep(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = usleep(Param[0]->Val->Integer);
-}
-
-void UnistdVfork(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = vfork();
-}
-
-void UnistdWrite(struct ParseState *Parser, struct Value *ReturnValue, struct Value **Param, int NumArgs)
-{
-    ReturnValue->Val->Integer = write(Param[0]->Val->Integer, Param[1]->Val->Pointer, Param[2]->Val->Integer);
-}
-
-
-/* handy structure definitions */
+/* POSIX 类型定义: uid_t, gid_t, pid_t, off_t, size_t, ssize_t 等 */
 const char UnistdDefs[] = "\
 typedef int uid_t; \
 typedef int gid_t; \
@@ -397,7 +512,7 @@ typedef int useconds_t;\
 typedef int intptr_t;\
 ";
 
-/* all unistd.h functions */
+/* unistd 函数注册表: 将 PicoC 函数映射到 C 原型声明 */
 struct LibraryFunction UnistdFunctions[] =
 {
     { UnistdAccess,        "int access(char *, int);" },
@@ -487,14 +602,16 @@ struct LibraryFunction UnistdFunctions[] =
     { NULL,                 NULL }
 };
 
-/* creates various system-dependent definitions */
+/* UnistdSetupFunc: 初始化 unistd 库
+ * - 定义 NULL 常量
+ * - 注册 optarg, optind, opterr, optopt 等 getopt 全局变量 */
 void UnistdSetupFunc(Picoc *pc)
 {
-    /* define NULL */
+    /* 定义 NULL (如果尚未定义) */
     if (!VariableDefined(pc, TableStrRegister(pc, "NULL")))
         VariableDefinePlatformVar(pc, NULL, "NULL", &pc->IntType, (union AnyValue *)&ZeroValue, FALSE);
 
-    /* define optarg and friends */
+    /* 注册 getopt 相关的外部变量 */
     VariableDefinePlatformVar(pc, NULL, "optarg", pc->CharPtrType, (union AnyValue *)&optarg, TRUE);
     VariableDefinePlatformVar(pc, NULL, "optind", &pc->IntType, (union AnyValue *)&optind, TRUE);
     VariableDefinePlatformVar(pc, NULL, "opterr", &pc->IntType, (union AnyValue *)&opterr, TRUE);
@@ -502,4 +619,3 @@ void UnistdSetupFunc(Picoc *pc)
 }
 
 #endif /* !BUILTIN_MINI_STDLIB */
-
