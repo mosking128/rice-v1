@@ -11,13 +11,13 @@ This project ports PicoC to STM32H750 and provides a `USART1`-based REPL, whole-
 - Interactive PicoC REPL over `USART1`
 - File upload mode with `:load / :end / :abort`
 - Multi-line source input and whole-file execution
-- **Interactive debugger**: breakpoints, single-step, expression evaluation
+- **Interactive debugger**: breakpoints, single-step, expression evaluation, variable edit, watch
 - STM32H750 Keil MDK project ready for flashing
 - Windows host tool for serial console, file upload, batch testing, and debugging
 
 ## Debugger
 
-The host tool provides an interactive debugger with breakpoint, single-step, and expression evaluation support.
+The host tool provides an interactive debugger with breakpoint, single-step, expression evaluation, variable edit, and watch support.
 
 ### Debug Toolbar
 
@@ -28,6 +28,8 @@ The debug toolbar is always visible at the bottom of the host tool window.
 | Breakpoint | `行号` input + `设断点` / `清断点` | Set or clear a line breakpoint before uploading |
 | Execution | `继续` / `单步` | Continue execution or step one statement |
 | Expression | `表达式` input + `求值` | Evaluate a C expression in the current scope |
+| Variables | `变量监视` table | View in-scope variables and double-click values to edit them |
+| Watch | `Watch` table + `加监视` / `移除选中` | Track selected variables across stops and highlight changes |
 
 ### Workflow
 
@@ -35,9 +37,11 @@ The debug toolbar is always visible at the bottom of the host tool window.
 2. Enter a line number (e.g. `5`) and click `设断点` — the console shows `设置断点: 第5行`.
 3. Upload a `.c` file and execute it.
 4. Execution pauses at the breakpoint — the toolbar label shows `已中断: 第5行`.
-5. Click `单步` to step statement by statement, or enter an expression like `x + 1` and click `求值`.
-6. Click `继续` to resume until the next breakpoint or file end.
-7. Breakpoints are automatically cleared after each file execution.
+5. When execution stops, the `变量监视` table is refreshed with visible variables.
+6. Double-click a variable value to modify it, or add selected variables into the `Watch` table.
+7. Click `单步` to step statement by statement, or enter an expression like `x + 1` and click `求值`.
+8. Click `继续` to resume until the next breakpoint or file end.
+9. Breakpoints are automatically cleared after each file execution.
 
 ### Current Limits
 
@@ -45,6 +49,8 @@ The debug toolbar is always visible at the bottom of the host tool window.
 - Breakpoint line numbers refer to the uploaded file content, not REPL history.
 - `:eval` currently wraps the expression with `printf("%d\\n", (...))`, so integer-like expressions are the safest choice.
 - Breakpoints are copied into the isolated file-run instance and cleared after that run finishes.
+- Variable edit currently targets basic scalar values represented in the debugger output.
+- Watch values are refreshed on each break/step stop rather than continuously while the target is running.
 
 ### Debug Protocol
 
@@ -57,8 +63,13 @@ The host and device communicate via structured UART protocol extensions:
 | Host → Device | `:cont` | Continue execution |
 | Host → Device | `:step` | Single-step one statement |
 | Host → Device | `:eval <expr>` | Evaluate expression |
+| Host → Device | `:vars` | Enumerate visible variables |
+| Host → Device | `:set <name> <value>` | Modify a variable value |
 | Device → Host | `:break <file> <line> <col>` | Breakpoint hit notification |
 | Device → Host | `:step <file> <line> <col>` | Step break notification |
+| Device → Host | `:var <type> <name> <value>` | One variable entry |
+| Device → Host | `:ok vars` | Variable enumeration finished |
+| Device → Host | `:ok set` / `:err set ...` | Variable write result |
 
 ## Repository Layout
 
@@ -68,7 +79,7 @@ The host and device communicate via structured UART protocol extensions:
 - [tools/picoc_host/src](tools/picoc_host/src): host tool source code
 - [tools/picoc_host/src/README.md](tools/picoc_host/src/README.md): host tool usage
 - [docs/移植流程.md](docs/%E7%A7%BB%E6%A4%8D%E6%B5%81%E7%A8%8B.md): porting workflow notes
-- [docs/调试使用说明.md](docs/%E8%B0%83%E8%AF%95%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.md): breakpoint and single-step guide
+- [docs/调试使用说明.md](docs/%E8%B0%83%E8%AF%95%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.md): breakpoint, single-step, variable edit, and watch guide
 
 ## Current Scope
 
@@ -111,8 +122,9 @@ Packaged mode:
 
 1. Connect and set a breakpoint by entering a line number and clicking `设断点`.
 2. Upload and execute a file — execution pauses at the breakpoint.
-3. Use `单步`, `求值`, and `继续` to inspect program state.
-4. Breakpoints are cleared automatically after each run.
+3. Use `变量监视` to inspect locals, edit values in place, and add key variables into `Watch`.
+4. Use `单步`, `求值`, and `继续` to inspect and control program state.
+5. Breakpoints are cleared automatically after each run.
 
 ## Notes
 
