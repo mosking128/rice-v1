@@ -616,7 +616,7 @@ static void PicocApp_ExecuteReplSource(void)
  */
 static void PicocApp_ExecuteLoadSource(void)
 {
-    Picoc isolated_picoc;
+    static Picoc isolated_picoc;
 
     if (g_load_length == 0U)
     {
