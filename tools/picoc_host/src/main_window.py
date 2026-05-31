@@ -282,6 +282,8 @@ class MainWindow(QMainWindow):
 
         self.file_list = QListWidget()
         self.file_list.setSelectionMode(QListWidget.SingleSelection)
+        self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.file_list.customContextMenuRequested.connect(self._show_file_context_menu)
         self.file_list.setStyleSheet("""
             QListWidget {
                 background-color: #1e1e1e;
@@ -848,6 +850,159 @@ class MainWindow(QMainWindow):
             self.file_list.setCurrentItem(added_items[0])
             self._append_info_line(f"已添加 {len(added_items)} 个文件到待测列表。")
         self._update_ui_state()
+
+    def _show_file_context_menu(self, pos) -> None:
+        """Show context menu for file list."""
+        item = self.file_list.itemAt(pos)
+        if item is None:
+            return
+
+        file_path = item.data(FILE_ITEM_ROLE)
+        if not isinstance(file_path, str) or not file_path:
+            return
+
+        path = Path(file_path)
+        if not path.exists():
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2d2d2d;
+                color: #e0e0e0;
+                border: 1px solid #3c3c3c;
+            }
+            QMenu::item:selected {
+                background-color: #094771;
+            }
+        """)
+
+        # 打开文件
+        open_action = menu.addAction("打开文件")
+        open_action.triggered.connect(lambda: self._open_file_in_editor(path))
+
+        # 在资源管理器中打开
+        explorer_action = menu.addAction("在资源管理器中打开")
+        explorer_action.triggered.connect(lambda: self._open_in_explorer(path))
+
+        menu.addSeparator()
+
+        # 复制文件路径
+        copy_path_action = menu.addAction("复制文件路径")
+        copy_path_action.triggered.connect(lambda: self._copy_file_path(path))
+
+        # 复制文件名
+        copy_name_action = menu.addAction("复制文件名")
+        copy_name_action.triggered.connect(lambda: self._copy_file_name(path))
+
+        menu.addSeparator()
+
+        # 重命名
+        rename_action = menu.addAction("重命名")
+        rename_action.triggered.connect(lambda: self._rename_file(path, item))
+
+        # 删除文件
+        delete_action = menu.addAction("删除文件")
+        delete_action.triggered.connect(lambda: self._delete_file(path, item))
+
+        menu.addSeparator()
+
+        # 执行文件
+        run_action = menu.addAction("执行文件")
+        run_action.triggered.connect(lambda: self._run_single_file(path))
+
+        # 从列表中移除
+        remove_action = menu.addAction("从列表中移除")
+        remove_action.triggered.connect(lambda: self._remove_from_list(item))
+
+        menu.exec_(self.file_list.mapToGlobal(pos))
+
+    def _open_file_in_editor(self, file_path: Path) -> None:
+        """Open file in editor."""
+        if file_path.suffix.lower() in ('.c', '.h', '.txt', '.py', '.md'):
+            self._load_source_to_editor(file_path)
+
+    def _open_in_explorer(self, file_path: Path) -> None:
+        """Open file location in Windows Explorer."""
+        import subprocess
+        try:
+            subprocess.Popen(['explorer', '/select,', str(file_path)])
+        except Exception as exc:
+            self._show_warning("打开失败", str(exc))
+
+    def _copy_file_path(self, file_path: Path) -> None:
+        """Copy file path to clipboard."""
+        from PyQt5.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setText(str(file_path))
+        self._set_status(f"已复制路径: {file_path.name}")
+
+    def _copy_file_name(self, file_path: Path) -> None:
+        """Copy file name to clipboard."""
+        from PyQt5.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setText(file_path.name)
+        self._set_status(f"已复制文件名: {file_path.name}")
+
+    def _rename_file(self, old_path: Path, item: QListWidgetItem) -> None:
+        """Rename file."""
+        from PyQt5.QtWidgets import QInputDialog
+        new_name, ok = QInputDialog.getText(self, "重命名", "新文件名:", text=old_path.name)
+        if not ok or not new_name or new_name == old_path.name:
+            return
+
+        new_path = old_path.parent / new_name
+        if new_path.exists():
+            self._show_warning("文件已存在", f"文件 {new_name} 已存在。")
+            return
+
+        try:
+            old_path.rename(new_path)
+        except Exception as exc:
+            self._show_warning("重命名失败", str(exc))
+            return
+
+        item.setText(new_name)
+        item.setData(FILE_ITEM_ROLE, str(new_path.resolve()))
+        item.setToolTip(str(new_path.resolve()))
+        self._set_status(f"已重命名: {old_path.name} -> {new_name}")
+
+    def _delete_file(self, file_path: Path, item: QListWidgetItem) -> None:
+        """Delete file."""
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除文件 {file_path.name} 吗？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            file_path.unlink()
+        except Exception as exc:
+            self._show_warning("删除失败", str(exc))
+            return
+
+        row = self.file_list.row(item)
+        self.file_list.takeItem(row)
+        self._set_status(f"已删除: {file_path.name}")
+
+    def _run_single_file(self, file_path: Path) -> None:
+        """Run a single file."""
+        if not self._serial_manager.is_connected():
+            self._show_warning("未连接", "请先连接串口。")
+            return
+        self._batch_active = False
+        self._batch_queue.clear()
+        self._batch_results.clear()
+        self._single_step_mode = True
+        self._start_upload_for_path(file_path)
+
+    def _remove_from_list(self, item: QListWidgetItem) -> None:
+        """Remove file from list without deleting the actual file."""
+        row = self.file_list.row(item)
+        self.file_list.takeItem(row)
+        self._set_status("已从列表中移除")
 
     def _clear_file_list(self) -> None:
         self.file_list.clear()
