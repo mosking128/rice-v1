@@ -1,4 +1,4 @@
-# PicoC on STM32H750
+# PicoScript
 
 [English](README.md) | [中文](README_CN.md)
 
