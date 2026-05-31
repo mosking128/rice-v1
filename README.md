@@ -1,4 +1,4 @@
-# PicoC on STM32H750
+# PicoScript
 
 [English](README.md) | [中文](README_CN.md)
 
@@ -23,7 +23,7 @@ The host tool provides an interactive debugger with breakpoint, single-step, exp
 
 The debug toolbar is always visible at the bottom of the host tool window.
 
-| Section | Controls | Description |
+| Section | Controls |描述|
 |---------|----------|-------------|
 | Breakpoint | `行号` input + `设断点` / `清断点` | Set or clear a line breakpoint before uploading |
 | Execution | `继续` / `单步` | Continue execution or step one statement |
