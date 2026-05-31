@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PyQt5.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QIcon
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,6 +27,8 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QPlainTextEdit,
     QToolBar,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -267,57 +269,85 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
 
-        explorer_label = QLabel("资源管理器")
-        explorer_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-weight: bold; font: {FONT_UI};")
-        layout.addWidget(explorer_label)
+        # ── 工具栏 ──
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.setSpacing(4)
 
+        open_folder_btn = QPushButton("打开文件夹")
+        open_folder_btn.clicked.connect(self._browse_folder)
+        toolbar_layout.addWidget(open_folder_btn)
+
+        refresh_btn = QPushButton("刷新")
+        refresh_btn.clicked.connect(self._refresh_tree)
+        toolbar_layout.addWidget(refresh_btn)
+
+        layout.addLayout(toolbar_layout)
+
+        # ── 文件路径 ──
         self.file_path_edit = QLineEdit()
         self.file_path_edit.setPlaceholderText("选择文件夹或文件...")
         self.file_path_edit.setReadOnly(True)
         layout.addWidget(self.file_path_edit)
 
-        list_label = QLabel("待测文件")
-        list_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-weight: bold; font: {FONT_UI}; margin-top: 4px;")
-        layout.addWidget(list_label)
-
-        self.file_list = QListWidget()
-        self.file_list.setSelectionMode(QListWidget.SingleSelection)
-        self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.file_list.customContextMenuRequested.connect(self._show_file_context_menu)
-        self.file_list.setStyleSheet("""
-            QListWidget {
+        # ── 树形文件浏览器 ──
+        self.file_tree = QTreeWidget()
+        self.file_tree.setHeaderHidden(True)
+        self.file_tree.setAnimated(True)
+        self.file_tree.setIndentation(16)
+        self.file_tree.setSelectionMode(QTreeWidget.SingleSelection)
+        self.file_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.file_tree.customContextMenuRequested.connect(self._show_tree_context_menu)
+        self.file_tree.itemDoubleClicked.connect(self._on_tree_item_double_clicked)
+        self.file_tree.currentItemChanged.connect(self._on_tree_item_changed)
+        self.file_tree.setStyleSheet("""
+            QTreeWidget {
                 background-color: #1e1e1e;
                 color: #e0e0e0;
                 border: 1px solid #3c3c3c;
                 font-size: 13px;
+                outline: none;
             }
-            QListWidget::item {
+            QTreeWidget::item {
                 padding: 3px 6px;
             }
-            QListWidget::item:selected {
+            QTreeWidget::item:selected {
                 background-color: #094771;
                 color: #ffffff;
             }
-            QListWidget::item:hover {
+            QTreeWidget::item:hover {
                 background-color: #2a2d2e;
             }
+            QTreeWidget::branch:has-children:!has-siblings:closed,
+            QTreeWidget::branch:closed:has-children:has-siblings {
+                border-image: none;
+                image: url(none);
+            }
+            QTreeWidget::branch:open:has-children:!has-siblings,
+            QTreeWidget::branch:open:has-children:has-siblings {
+                border-image: none;
+                image: url(none);
+            }
         """)
-        layout.addWidget(self.file_list, 1)
+        layout.addWidget(self.file_tree, 1)
 
+        # ── 操作按钮 ──
         btn_layout = QGridLayout()
         btn_layout.setSpacing(4)
 
         self.upload_button = QPushButton("执行选中")
         self.run_all_button = QPushButton("全部执行")
         self.abort_button = QPushButton("中止")
-        self.clear_list_button = QPushButton("清空列表")
 
         btn_layout.addWidget(self.upload_button, 0, 0)
         btn_layout.addWidget(self.run_all_button, 0, 1)
         btn_layout.addWidget(self.abort_button, 1, 0)
-        btn_layout.addWidget(self.clear_list_button, 1, 1)
 
         layout.addLayout(btn_layout)
+
+        # ── 状态变量 ──
+        self._current_root = None
+        self._file_item_map = {}  # path -> QTreeWidgetItem
+
         return sidebar
 
     def _build_right_area(self) -> QWidget:
@@ -657,9 +687,7 @@ class MainWindow(QMainWindow):
 
         self.upload_button.clicked.connect(self._upload_file)
         self.run_all_button.clicked.connect(self._run_all_files)
-        self.clear_list_button.clicked.connect(self._clear_file_list)
         self.abort_button.clicked.connect(self._abort_action)
-        self.file_list.currentItemChanged.connect(self._on_file_selected)
 
         self._serial_manager.text_received.connect(self._session.handle_incoming_text)
         self._serial_manager.error_occurred.connect(self._handle_error)
@@ -795,73 +823,103 @@ class MainWindow(QMainWindow):
         self._set_status(f"已创建文件夹: {folder_path.name}")
 
     def _get_current_folder(self) -> Path:
-        """Get the current folder path from the file list or path edit."""
-        # Try to get from file path edit
-        current_path = self.file_path_edit.text().strip()
-        if current_path:
-            path = Path(current_path)
-            if path.is_dir():
-                return path
-            return path.parent
-
-        # Try to get from first file in list
-        if self.file_list.count() > 0:
-            item = self.file_list.item(0)
-            path_str = item.data(FILE_ITEM_ROLE)
-            if isinstance(path_str, str) and path_str:
-                return Path(path_str).parent
-
+        """Get the current folder path."""
+        if self._current_root and self._current_root.exists():
+            return self._current_root
         return None
 
-    def _browse_files(self) -> None:
-        filenames, _ = QFileDialog.getOpenFileNames(
-            self, "选择 C 文件", "", "C source (*.c);;All files (*.*)",
-        )
-        if filenames:
-            self._add_files_to_list([Path(name) for name in filenames])
-
     def _browse_folder(self) -> None:
+        """Open folder and populate tree."""
         folder = QFileDialog.getExistingDirectory(self, "选择文件夹")
         if folder:
-            folder_path = Path(folder)
-            c_files = sorted(folder_path.rglob("*.c"))
-            if c_files:
-                self._add_files_to_list(c_files)
-            else:
-                self._show_warning("未找到文件", f"文件夹中没有 .c 文件:\n{folder}")
+            self._load_folder(Path(folder))
 
-    def _add_files_to_list(self, paths: list) -> None:
-        existing = {path.resolve() for path in self._get_all_listed_files()}
-        added_items = []
-        for path in paths:
-            if not path.exists() or not path.is_file() or path.suffix.lower() != ".c":
-                continue
-            resolved = path.resolve()
-            if resolved in existing:
-                continue
-            item = QListWidgetItem(path.name)
-            item.setData(FILE_ITEM_ROLE, str(resolved))
-            item.setToolTip(str(resolved))
-            self.file_list.addItem(item)
-            added_items.append(item)
-            existing.add(resolved)
+    def _load_folder(self, folder_path: Path) -> None:
+        """Load folder into tree view."""
+        if not folder_path.exists() or not folder_path.is_dir():
+            return
 
-        if added_items:
-            self.file_list.setCurrentItem(added_items[0])
-            self._append_info_line(f"已添加 {len(added_items)} 个文件到待测列表。")
+        self._current_root = folder_path
+        self._file_item_map.clear()
+        self.file_tree.clear()
+
+        # 添加根节点
+        root_item = QTreeWidgetItem(self.file_tree, [folder_path.name])
+        root_item.setData(0, Qt.UserRole, str(folder_path))
+        root_item.setExpanded(True)
+        self._file_item_map[str(folder_path)] = root_item
+
+        # 递归添加子节点
+        self._populate_tree(root_item, folder_path)
+
+        self.file_path_edit.setText(str(folder_path))
+        self._append_info_line(f"已打开文件夹: {folder_path}")
         self._update_ui_state()
 
-    def _show_file_context_menu(self, pos) -> None:
-        """Show context menu for file list."""
-        item = self.file_list.itemAt(pos)
+    def _populate_tree(self, parent_item: QTreeWidgetItem, folder_path: Path) -> None:
+        """Recursively populate tree with folder contents."""
+        try:
+            entries = sorted(folder_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except PermissionError:
+            return
+
+        for entry in entries:
+            # 跳过隐藏文件和系统文件
+            if entry.name.startswith('.'):
+                continue
+
+            if entry.is_dir():
+                # 添加文件夹
+                dir_item = QTreeWidgetItem(parent_item, [entry.name])
+                dir_item.setData(0, Qt.UserRole, str(entry))
+                dir_item.setForeground(0, QColor("#569cd6"))  # 文件夹用蓝色
+                self._file_item_map[str(entry)] = dir_item
+                # 递归添加子目录
+                self._populate_tree(dir_item, entry)
+            elif entry.suffix.lower() in ('.c', '.h', '.txt', '.py', '.md'):
+                # 添加文件
+                file_item = QTreeWidgetItem(parent_item, [entry.name])
+                file_item.setData(0, Qt.UserRole, str(entry))
+                self._file_item_map[str(entry)] = file_item
+
+    def _refresh_tree(self) -> None:
+        """Refresh the tree view."""
+        if self._current_root:
+            self._load_folder(self._current_root)
+
+    def _on_tree_item_changed(self, current, previous) -> None:
+        """When tree selection changes, update path display."""
+        if current is None:
+            self.file_path_edit.clear()
+            return
+        path_str = current.data(0, Qt.UserRole)
+        if path_str:
+            self.file_path_edit.setText(path_str)
+
+    def _on_tree_item_double_clicked(self, item, column) -> None:
+        """When double-clicking item in tree, open file in editor."""
+        if item is None:
+            return
+        path_str = item.data(0, Qt.UserRole)
+        if not path_str:
+            return
+        file_path = Path(path_str)
+        if file_path.is_file() and file_path.suffix.lower() in ('.c', '.h', '.txt', '.py', '.md'):
+            if self._editor_dirty and self._auto_save_enabled:
+                self._auto_save()
+            self._load_source_to_editor(file_path)
+
+    def _show_tree_context_menu(self, pos) -> None:
+        """Show context menu for tree view."""
+        item = self.file_tree.itemAt(pos)
         if item is None:
             return
 
-        file_path = item.data(FILE_ITEM_ROLE)
-        if not isinstance(file_path, str) or not file_path:
+        path_str = item.data(0, Qt.UserRole)
+        if not path_str:
             return
 
-        path = Path(file_path)
+        path = Path(path_str)
         if not path.exists():
             return
 
@@ -877,45 +935,57 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        # 打开文件
-        open_action = menu.addAction("打开文件")
-        open_action.triggered.connect(lambda: self._open_file_in_editor(path))
+        if path.is_file():
+            # 文件操作
+            open_action = menu.addAction("在编辑器中打开")
+            open_action.triggered.connect(lambda: self._open_file_in_editor(path))
 
-        # 在资源管理器中打开
+            run_action = menu.addAction("执行文件")
+            run_action.triggered.connect(lambda: self._run_single_file(path))
+
+            menu.addSeparator()
+
+            copy_path_action = menu.addAction("复制路径")
+            copy_path_action.triggered.connect(lambda: self._copy_to_clipboard(str(path)))
+
+            copy_name_action = menu.addAction("复制文件名")
+            copy_name_action.triggered.connect(lambda: self._copy_to_clipboard(path.name))
+
+            menu.addSeparator()
+
+            rename_action = menu.addAction("重命名")
+            rename_action.triggered.connect(lambda: self._rename_file(path, item))
+
+            delete_action = menu.addAction("删除")
+            delete_action.triggered.connect(lambda: self._delete_file(path, item))
+
+        else:
+            # 文件夹操作
+            new_c_action = menu.addAction("新建 C 文件")
+            new_c_action.triggered.connect(lambda: self._new_c_file_in(path))
+
+            new_txt_action = menu.addAction("新建文本文档")
+            new_txt_action.triggered.connect(lambda: self._new_text_file_in(path))
+
+            new_folder_action = menu.addAction("新建文件夹")
+            new_folder_action.triggered.connect(lambda: self._new_folder_in(path))
+
+            menu.addSeparator()
+
+            copy_path_action = menu.addAction("复制路径")
+            copy_path_action.triggered.connect(lambda: self._copy_to_clipboard(str(path)))
+
+            menu.addSeparator()
+
+            refresh_action = menu.addAction("刷新")
+            refresh_action.triggered.connect(lambda: self._refresh_item(item, path))
+
+        # 通用操作
+        menu.addSeparator()
         explorer_action = menu.addAction("在资源管理器中打开")
         explorer_action.triggered.connect(lambda: self._open_in_explorer(path))
 
-        menu.addSeparator()
-
-        # 复制文件路径
-        copy_path_action = menu.addAction("复制文件路径")
-        copy_path_action.triggered.connect(lambda: self._copy_file_path(path))
-
-        # 复制文件名
-        copy_name_action = menu.addAction("复制文件名")
-        copy_name_action.triggered.connect(lambda: self._copy_file_name(path))
-
-        menu.addSeparator()
-
-        # 重命名
-        rename_action = menu.addAction("重命名")
-        rename_action.triggered.connect(lambda: self._rename_file(path, item))
-
-        # 删除文件
-        delete_action = menu.addAction("删除文件")
-        delete_action.triggered.connect(lambda: self._delete_file(path, item))
-
-        menu.addSeparator()
-
-        # 执行文件
-        run_action = menu.addAction("执行文件")
-        run_action.triggered.connect(lambda: self._run_single_file(path))
-
-        # 从列表中移除
-        remove_action = menu.addAction("从列表中移除")
-        remove_action.triggered.connect(lambda: self._remove_from_list(item))
-
-        menu.exec_(self.file_list.mapToGlobal(pos))
+        menu.exec_(self.file_tree.mapToGlobal(pos))
 
     def _open_file_in_editor(self, file_path: Path) -> None:
         """Open file in editor."""
@@ -930,30 +1000,23 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._show_warning("打开失败", str(exc))
 
-    def _copy_file_path(self, file_path: Path) -> None:
-        """Copy file path to clipboard."""
+    def _copy_to_clipboard(self, text: str) -> None:
+        """Copy text to clipboard."""
         from PyQt5.QtWidgets import QApplication
         clipboard = QApplication.clipboard()
-        clipboard.setText(str(file_path))
-        self._set_status(f"已复制路径: {file_path.name}")
+        clipboard.setText(text)
+        self._set_status(f"已复制: {text}")
 
-    def _copy_file_name(self, file_path: Path) -> None:
-        """Copy file name to clipboard."""
-        from PyQt5.QtWidgets import QApplication
-        clipboard = QApplication.clipboard()
-        clipboard.setText(file_path.name)
-        self._set_status(f"已复制文件名: {file_path.name}")
-
-    def _rename_file(self, old_path: Path, item: QListWidgetItem) -> None:
-        """Rename file."""
+    def _rename_file(self, old_path: Path, item: QTreeWidgetItem) -> None:
+        """Rename file or folder."""
         from PyQt5.QtWidgets import QInputDialog
-        new_name, ok = QInputDialog.getText(self, "重命名", "新文件名:", text=old_path.name)
+        new_name, ok = QInputDialog.getText(self, "重命名", "新名称:", text=old_path.name)
         if not ok or not new_name or new_name == old_path.name:
             return
 
         new_path = old_path.parent / new_name
         if new_path.exists():
-            self._show_warning("文件已存在", f"文件 {new_name} 已存在。")
+            self._show_warning("已存在", f"{new_name} 已存在。")
             return
 
         try:
@@ -962,29 +1025,44 @@ class MainWindow(QMainWindow):
             self._show_warning("重命名失败", str(exc))
             return
 
-        item.setText(new_name)
-        item.setData(FILE_ITEM_ROLE, str(new_path.resolve()))
-        item.setToolTip(str(new_path.resolve()))
+        # 更新树节点
+        item.setText(0, new_name)
+        item.setData(0, Qt.UserRole, str(new_path))
+
+        # 更新映射
+        del self._file_item_map[str(old_path)]
+        self._file_item_map[str(new_path)] = item
+
         self._set_status(f"已重命名: {old_path.name} -> {new_name}")
 
-    def _delete_file(self, file_path: Path, item: QListWidgetItem) -> None:
+    def _delete_file(self, file_path: Path, item: QTreeWidgetItem) -> None:
         """Delete file."""
         reply = QMessageBox.question(
             self, "确认删除",
-            f"确定要删除文件 {file_path.name} 吗？",
+            f"确定要删除 {file_path.name} 吗？",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply != QMessageBox.Yes:
             return
 
         try:
-            file_path.unlink()
+            if file_path.is_file():
+                file_path.unlink()
+            else:
+                import shutil
+                shutil.rmtree(file_path)
         except Exception as exc:
             self._show_warning("删除失败", str(exc))
             return
 
-        row = self.file_list.row(item)
-        self.file_list.takeItem(row)
+        # 从树中移除
+        parent = item.parent()
+        if parent:
+            parent.removeChild(item)
+        else:
+            self.file_tree.takeTopLevelItem(self.file_tree.indexOfTopLevelItem(item))
+
+        del self._file_item_map[str(file_path)]
         self._set_status(f"已删除: {file_path.name}")
 
     def _run_single_file(self, file_path: Path) -> None:
@@ -998,37 +1076,80 @@ class MainWindow(QMainWindow):
         self._single_step_mode = True
         self._start_upload_for_path(file_path)
 
-    def _remove_from_list(self, item: QListWidgetItem) -> None:
-        """Remove file from list without deleting the actual file."""
-        row = self.file_list.row(item)
-        self.file_list.takeItem(row)
-        self._set_status("已从列表中移除")
-
-    def _clear_file_list(self) -> None:
-        self.file_list.clear()
-        self.file_path_edit.clear()
-        self.editor.clear()
-        self._breakpoints.clear()
-        self._editor_dirty = False
-        self._update_title_dirty()
-        self.tab_label.setText("  未打开文件")
-        self.editor_stack.setCurrentIndex(0)
-        self._update_ui_state()
-
-    def _on_file_selected(self, current, previous) -> None:
-        """When file list selection changes, load source into editor."""
-        if current is None:
-            self.file_path_edit.clear()
-            self.tab_label.setText("  未打开文件")
-            self.editor_stack.setCurrentIndex(0)
+    def _new_c_file_in(self, folder_path: Path) -> None:
+        """Create new C file in specified folder."""
+        filename, ok = QFileDialog.getSaveFileName(
+            self, "新建 C 文件", str(folder_path / "untitled.c"),
+            "C source (*.c);;All files (*.*)",
+        )
+        if not ok or not filename:
             return
-        if self._editor_dirty and self._auto_save_enabled:
-            self._auto_save()
-        path = current.data(FILE_ITEM_ROLE)
-        if not isinstance(path, str) or not path:
+        file_path = Path(filename)
+        if file_path.exists():
+            self._show_warning("文件已存在", f"{file_path.name} 已存在。")
             return
-        self.file_path_edit.setText(path)
-        self._load_source_to_editor(Path(path))
+        try:
+            file_path.write_text("#include <stdio.h>\n\nint main() {\n    return 0;\n}\n", encoding="utf-8")
+        except Exception as exc:
+            self._show_warning("创建失败", str(exc))
+            return
+        self._refresh_item(self._file_item_map.get(str(folder_path)), folder_path)
+        self._set_status(f"已创建: {file_path.name}")
+
+    def _new_text_file_in(self, folder_path: Path) -> None:
+        """Create new text file in specified folder."""
+        filename, ok = QFileDialog.getSaveFileName(
+            self, "新建文本文档", str(folder_path / "untitled.txt"),
+            "Text files (*.txt);;All files (*.*)",
+        )
+        if not ok or not filename:
+            return
+        file_path = Path(filename)
+        if file_path.exists():
+            self._show_warning("文件已存在", f"{file_path.name} 已存在。")
+            return
+        try:
+            file_path.write_text("", encoding="utf-8")
+        except Exception as exc:
+            self._show_warning("创建失败", str(exc))
+            return
+        self._refresh_item(self._file_item_map.get(str(folder_path)), folder_path)
+        self._set_status(f"已创建: {file_path.name}")
+
+    def _new_folder_in(self, parent_path: Path) -> None:
+        """Create new folder in specified parent folder."""
+        from PyQt5.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "新建文件夹", "文件夹名称:")
+        if not ok or not name:
+            return
+        new_path = parent_path / name
+        if new_path.exists():
+            self._show_warning("已存在", f"{name} 已存在。")
+            return
+        try:
+            new_path.mkdir()
+        except Exception as exc:
+            self._show_warning("创建失败", str(exc))
+            return
+        self._refresh_item(self._file_item_map.get(str(parent_path)), parent_path)
+        self._set_status(f"已创建文件夹: {name}")
+
+    def _refresh_item(self, item: QTreeWidgetItem, folder_path: Path) -> None:
+        """Refresh a specific tree item."""
+        if item is None:
+            return
+
+        # 清除子节点
+        item.takeChildren()
+
+        # 从映射中移除旧的子项
+        keys_to_remove = [k for k in self._file_item_map if k.startswith(str(folder_path)) and k != str(folder_path)]
+        for key in keys_to_remove:
+            del self._file_item_map[key]
+
+        # 重新填充
+        self._populate_tree(item, folder_path)
+        item.setExpanded(True)
 
     def _load_source_to_editor(self, file_path: Path) -> None:
         """Read file and display in QScintilla editor, clearing old breakpoints."""
@@ -1043,22 +1164,23 @@ class MainWindow(QMainWindow):
         self.editor_stack.setCurrentIndex(1)
 
     def _get_selected_file_path(self) -> Path:
-        item = self.file_list.currentItem()
+        """Get currently selected file path from tree."""
+        item = self.file_tree.currentItem()
         if item is None:
             return None
-        path = item.data(FILE_ITEM_ROLE)
-        if not isinstance(path, str) or not path:
+        path_str = item.data(0, Qt.UserRole)
+        if not path_str:
             return None
-        return Path(path)
+        path = Path(path_str)
+        if path.is_file():
+            return path
+        return None
 
     def _get_all_listed_files(self) -> list:
-        paths = []
-        for index in range(self.file_list.count()):
-            item = self.file_list.item(index)
-            path = item.data(FILE_ITEM_ROLE)
-            if isinstance(path, str) and path:
-                paths.append(Path(path))
-        return paths
+        """Get all C files in current root folder."""
+        if not self._current_root:
+            return []
+        return sorted(self._current_root.rglob("*.c"))
 
     # ── Breakpoints via margin click ────────────────────────
 
@@ -1279,14 +1401,38 @@ class MainWindow(QMainWindow):
         self._single_step_mode = False
 
     def _advance_to_next_file_selection(self) -> None:
+        """Advance to next C file in tree after execution."""
         if not self._single_step_mode:
             return
-        current_row = self.file_list.currentRow()
-        if current_row < 0:
+        # 获取当前选中的文件
+        current_item = self.file_tree.currentItem()
+        if current_item is None:
             return
-        next_row = current_row + 1
-        if next_row < self.file_list.count():
-            self.file_list.setCurrentRow(next_row)
+        current_path_str = current_item.data(0, Qt.UserRole)
+        if not current_path_str:
+            return
+        current_path = Path(current_path_str)
+
+        # 获取所有 C 文件
+        all_files = self._get_all_listed_files()
+        if not all_files:
+            return
+
+        # 找到当前文件的索引
+        try:
+            current_idx = all_files.index(current_path)
+        except ValueError:
+            return
+
+        # 移动到下一个文件
+        next_idx = current_idx + 1
+        if next_idx < len(all_files):
+            next_path = all_files[next_idx]
+            # 在树中找到对应的节点
+            next_item = self._file_item_map.get(str(next_path))
+            if next_item:
+                self.file_tree.setCurrentItem(next_item)
+                self._load_source_to_editor(next_path)
 
     def _handle_upload_state_changed(self, active: bool) -> None:
         self._upload_active = active
@@ -1494,8 +1640,8 @@ class MainWindow(QMainWindow):
         connected = self._serial_manager.is_connected()
         busy = self._session.mode == "BUSY"
         debug_active = self._session._debug_active
-        has_files = self.file_list.count() > 0
-        has_selection = self.file_list.currentItem() is not None
+        has_selection = self.file_tree.currentItem() is not None
+        has_files = bool(self._get_all_listed_files())
 
         self.connect_button.setEnabled(not connected)
         self.disconnect_button.setEnabled(connected)
@@ -1506,9 +1652,8 @@ class MainWindow(QMainWindow):
         self.manual_input.setEnabled(connected and not busy and not debug_active)
         self.send_button.setEnabled(connected and not busy and not debug_active)
 
-        self.clear_list_button.setEnabled(has_files)
-        # File list is always enabled
-        self.file_list.setEnabled(True)
+        # File tree is always enabled
+        self.file_tree.setEnabled(True)
         self.file_path_edit.setEnabled(True)
 
         self.upload_button.setEnabled(connected and not busy and has_selection)
