@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum, auto
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PyQt5.QtCore import QObject, QTimer, pyqtSignal as Signal
 
 
 class UploadPhase(Enum):

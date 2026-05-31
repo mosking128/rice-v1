@@ -6,7 +6,7 @@ from typing import Optional
 
 import serial
 import serial.tools.list_ports
-from PySide6.QtCore import QObject, Signal
+from PyQt5.QtCore import QObject, pyqtSignal as Signal
 
 
 class SerialReaderThread(threading.Thread):

@@ -1,13 +1,9 @@
-#include <stdio.h>
+int i;
 
-int a;
-a = 42;
-printf("%d\n", a);
-
-int b = 64;
-printf("%d\n", b);
-
-int c = 12, d = 34;
-printf("%d, %d\n", c, d);
-
-void main() {}
+for (i = 0; i < 10; i++)
+{
+    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+    HAL_Delay(500);
+    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+    HAL_Delay(500);
+}

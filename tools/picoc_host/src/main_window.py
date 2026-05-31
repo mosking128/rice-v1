@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import html
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PyQt5.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
-    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -17,20 +16,47 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
+    QShortcut,
+    QSplitter,
+    QStackedWidget,
+    QStatusBar,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
+    QPlainTextEdit,
+    QToolBar,
     QVBoxLayout,
     QWidget,
 )
+from PyQt5.Qsci import QsciScintilla, QsciLexerCPP
 
 from picoc_session import PicocSession
 from serial_manager import SerialManager
-
+from theme import (
+    BG_PRIMARY,
+    BG_SIDEBAR,
+    BORDER_FOCUS,
+    CONSOLE_ERROR,
+    CONSOLE_INFO,
+    CONSOLE_PROMPT,
+    CONSOLE_SEP,
+    CONSOLE_SOURCE,
+    CONSOLE_SUCCESS,
+    FONT_CONSOLE,
+    FONT_TABLE,
+    FONT_UI,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    SUCCESS,
+    ERROR,
+    WARNING,
+)
 
 FILE_ITEM_ROLE = 256
+BREAKPOINT_MARKER = 0
+EXECUTION_MARKER = 1
 
 ERROR_KEYWORDS = (
     "parse error",
@@ -52,8 +78,9 @@ TYPE_MAP = {
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("PicoC 上位机工具")
-        self.resize(1100, 950)
+        self.setWindowTitle("MCUStudio 单片机开发调试系统")
+        self.resize(1200, 800)
+        self.setMinimumSize(900, 600)
 
         self._console_line_buffer = ""
         self._upload_active = False
@@ -61,66 +88,434 @@ class MainWindow(QMainWindow):
         self._serial_manager = SerialManager()
         self._session = PicocSession()
 
-        self._batch_queue: list[Path] = []
-        self._batch_results: list[tuple[Path, bool, str]] = []
+        self._batch_queue: list = []
+        self._batch_results: list = []
         self._batch_active = False
-        self._current_upload_path: Path | None = None
+        self._current_upload_path = None
         self._single_step_mode = False
         self._populating = False
-        self._watch_vars: set[str] = set()
-        self._watch_prev: dict[str, str] = {}
-        self._watch_cache: dict[str, tuple[str, str]] = {}
+        self._watch_vars: set = set()
+        self._watch_prev: dict = {}
+        self._watch_cache: dict = {}
+        self._breakpoints: set = set()
+        self._editor_dirty = False
+        self._auto_save_enabled = True
+        self._auto_save_timer = QTimer()
+        self._auto_save_timer.setSingleShot(True)
+        self._auto_save_timer.setInterval(500)
+        self._auto_save_timer.timeout.connect(self._auto_save)
 
         self._build_ui()
         self._connect_signals()
         self._refresh_ports()
         self._update_ui_state()
 
+    # ── Layout ──────────────────────────────────────────────
+
     def _build_ui(self) -> None:
-        central = QWidget(self)
-        root = QVBoxLayout(central)
+        self._build_menubar()
+        self._build_toolbar()
+        self._build_central_area()
+        self._build_status_bar()
 
-        root.addWidget(self._build_connection_group())
-        root.addWidget(self._build_debug_toolbar())
-        root.addLayout(self._build_var_watch_row())
-        root.addWidget(self._build_console_group(), 1)
-        root.addWidget(self._build_actions_group())
+    def _build_toolbar(self) -> None:
+        toolbar = QToolBar("工具栏")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        self.addToolBar(toolbar)
 
-        self.setCentralWidget(central)
+        toolbar.addWidget(QLabel(" 串口 "))
+        self.port_combo = QComboBox()
+        self.port_combo.setMinimumWidth(100)
+        toolbar.addWidget(self.port_combo)
 
-    def _build_debug_toolbar(self) -> QFrame:
-        self.debug_toolbar = QFrame(self)
-        self.debug_toolbar.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
-        layout = QHBoxLayout(self.debug_toolbar)
-        layout.setContentsMargins(6, 4, 6, 4)
+        self.refresh_button = QPushButton("刷新")
+        toolbar.addWidget(self.refresh_button)
+
+        toolbar.addWidget(QLabel(" 波特率 "))
+        self.baud_combo = QComboBox()
+        self.baud_combo.addItems(["115200", "230400", "460800", "921600"])
+        self.baud_combo.setCurrentText("115200")
+        self.baud_combo.setMinimumWidth(90)
+        toolbar.addWidget(self.baud_combo)
+
+        self.connect_button = QPushButton("连接")
+        self.disconnect_button = QPushButton("断开")
+        toolbar.addWidget(self.connect_button)
+        toolbar.addWidget(self.disconnect_button)
+
+        toolbar.addSeparator()
 
         self.debug_info_label = QLabel("调试未激活")
-        layout.addWidget(self.debug_info_label, 1)
+        self.debug_info_label.setStyleSheet(f"color: {TEXT_SECONDARY}; padding-left: 8px;")
+        toolbar.addWidget(self.debug_info_label)
 
-        layout.addWidget(QLabel("行号"))
-        self.debug_bp_line = QLineEdit()
-        self.debug_bp_line.setPlaceholderText("42")
-        self.debug_bp_line.setFixedWidth(50)
-        layout.addWidget(self.debug_bp_line)
+        toolbar.addSeparator()
 
-        self.debug_bp_set_btn = QPushButton("设断点")
-        self.debug_bp_clear_btn = QPushButton("清断点")
-        layout.addWidget(self.debug_bp_set_btn)
-        layout.addWidget(self.debug_bp_clear_btn)
-
-        layout.addWidget(QLabel("  "))
         self.debug_continue_btn = QPushButton("继续")
         self.debug_step_btn = QPushButton("单步")
+        toolbar.addWidget(self.debug_continue_btn)
+        toolbar.addWidget(self.debug_step_btn)
+
+        toolbar.addWidget(QLabel(" "))
         self.debug_eval_input = QLineEdit()
         self.debug_eval_input.setPlaceholderText("表达式...")
         self.debug_eval_input.setFixedWidth(120)
+        toolbar.addWidget(self.debug_eval_input)
         self.debug_eval_btn = QPushButton("求值")
+        toolbar.addWidget(self.debug_eval_btn)
 
-        layout.addWidget(self.debug_continue_btn)
-        layout.addWidget(self.debug_step_btn)
-        layout.addWidget(self.debug_eval_input)
-        layout.addWidget(self.debug_eval_btn)
-        return self.debug_toolbar
+    def _build_menubar(self) -> None:
+        menubar = self.menuBar()
+        menubar.setStyleSheet(f"""
+            QMenuBar {{
+                background-color: {BG_SIDEBAR};
+                color: {TEXT_PRIMARY};
+                border-bottom: 1px solid #3c3c3c;
+            }}
+            QMenuBar::item:selected {{
+                background-color: #094771;
+            }}
+            QMenu {{
+                background-color: #2d2d2d;
+                color: {TEXT_PRIMARY};
+                border: 1px solid #3c3c3c;
+            }}
+            QMenu::item:selected {{
+                background-color: #094771;
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background-color: #3c3c3c;
+                margin: 4px 8px;
+            }}
+        """)
+
+        # ── 文件菜单 ──
+        file_menu = menubar.addMenu("文件(&F)")
+
+        open_action = file_menu.addAction("选择文件夹(&O)")
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self._browse_folder)
+
+        save_action = file_menu.addAction("保存(&S)")
+        save_action.setShortcut("Ctrl+S")
+        save_action.triggered.connect(self._save_current_file)
+
+        file_menu.addSeparator()
+
+        self.auto_save_menu_action = file_menu.addAction("自动保存")
+        self.auto_save_menu_action.setCheckable(True)
+        self.auto_save_menu_action.setChecked(True)
+        self.auto_save_menu_action.toggled.connect(self._on_auto_save_toggled)
+
+        file_menu.addSeparator()
+
+        exit_action = file_menu.addAction("退出(&X)")
+        exit_action.setShortcut("Alt+F4")
+        exit_action.triggered.connect(self.close)
+
+        # ── 视图菜单 ──
+        view_menu = menubar.addMenu("视图(&V)")
+
+        clear_console_action = view_menu.addAction("清空控制台")
+        clear_console_action.triggered.connect(self._clear_console)
+
+        save_log_action = view_menu.addAction("保存日志")
+        save_log_action.triggered.connect(self._save_log)
+
+    def _build_central_area(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.addWidget(self._build_sidebar())
+        main_splitter.addWidget(self._build_right_area())
+        main_splitter.setStretchFactor(0, 0)
+        main_splitter.setStretchFactor(1, 1)
+        main_splitter.setSizes([220, 980])
+
+        root_layout.addWidget(main_splitter)
+
+    def _build_sidebar(self) -> QWidget:
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        sidebar.setStyleSheet(f"""
+            QWidget#sidebar {{
+                background-color: {BG_SIDEBAR};
+                border-right: 1px solid #3c3c3c;
+            }}
+        """)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+
+        explorer_label = QLabel("资源管理器")
+        explorer_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-weight: bold; font: {FONT_UI};")
+        layout.addWidget(explorer_label)
+
+        self.file_path_edit = QLineEdit()
+        self.file_path_edit.setPlaceholderText("选择文件夹或文件...")
+        self.file_path_edit.setReadOnly(True)
+        layout.addWidget(self.file_path_edit)
+
+        list_label = QLabel("待测文件")
+        list_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-weight: bold; font: {FONT_UI}; margin-top: 4px;")
+        layout.addWidget(list_label)
+
+        self.file_list = QListWidget()
+        self.file_list.setSelectionMode(QListWidget.SingleSelection)
+        self.file_list.setStyleSheet("""
+            QListWidget {
+                background-color: #1e1e1e;
+                color: #e0e0e0;
+                border: 1px solid #3c3c3c;
+                font-size: 13px;
+            }
+            QListWidget::item {
+                padding: 3px 6px;
+            }
+            QListWidget::item:selected {
+                background-color: #094771;
+                color: #ffffff;
+            }
+            QListWidget::item:hover {
+                background-color: #2a2d2e;
+            }
+        """)
+        layout.addWidget(self.file_list, 1)
+
+        btn_layout = QGridLayout()
+        btn_layout.setSpacing(4)
+
+        self.upload_button = QPushButton("执行选中")
+        self.run_all_button = QPushButton("全部执行")
+        self.abort_button = QPushButton("中止")
+        self.clear_list_button = QPushButton("清空列表")
+
+        btn_layout.addWidget(self.upload_button, 0, 0)
+        btn_layout.addWidget(self.run_all_button, 0, 1)
+        btn_layout.addWidget(self.abort_button, 1, 0)
+        btn_layout.addWidget(self.clear_list_button, 1, 1)
+
+        layout.addLayout(btn_layout)
+        return sidebar
+
+    def _build_right_area(self) -> QWidget:
+        right = QWidget()
+        layout = QVBoxLayout(right)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # ── File tab bar (VS Code style) ──
+        self.tab_bar = QWidget()
+        self.tab_bar.setFixedHeight(35)
+        self.tab_bar.setStyleSheet(f"""
+            QWidget {{
+                background-color: {BG_SIDEBAR};
+                border-bottom: 1px solid #3c3c3c;
+            }}
+        """)
+        tab_layout = QHBoxLayout(self.tab_bar)
+        tab_layout.setContentsMargins(8, 0, 0, 0)
+        tab_layout.setSpacing(0)
+
+        self.tab_label = QLabel("  未打开文件")
+        self.tab_label.setStyleSheet(f"""
+            QLabel {{
+                color: {TEXT_PRIMARY};
+                background-color: {BG_PRIMARY};
+                border: 1px solid #3c3c3c;
+                border-bottom: none;
+                border-top: 2px solid {BORDER_FOCUS};
+                padding: 6px 16px;
+                font: {FONT_UI};
+            }}
+        """)
+        tab_layout.addWidget(self.tab_label)
+        tab_layout.addStretch()
+
+        layout.addWidget(self.tab_bar)
+
+        # ── Stacked widget: welcome / editor ──
+        self.editor_stack = QStackedWidget()
+
+        # Welcome page
+        welcome = QWidget()
+        welcome.setStyleSheet(f"background-color: {BG_PRIMARY};")
+        welcome_layout = QVBoxLayout(welcome)
+        welcome_layout.setAlignment(Qt.AlignCenter)
+
+        welcome_layout.addStretch()
+
+        title = QLabel("MCUStudio")
+        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 28px; font-weight: bold; background: transparent;")
+        title.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(title)
+
+        subtitle = QLabel("单片机开发调试系统")
+        subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 14px; background: transparent;")
+        subtitle.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(subtitle)
+
+        welcome_layout.addSpacing(30)
+
+        hint = QLabel("从左侧资源管理器选择文件夹或文件打开")
+        hint.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; background: transparent;")
+        hint.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(hint)
+
+        shortcut_hint = QLabel("Ctrl+O 选择文件夹    Ctrl+S 保存")
+        shortcut_hint.setStyleSheet(f"color: #6a6a6a; font-size: 12px; background: transparent;")
+        shortcut_hint.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(shortcut_hint)
+
+        welcome_layout.addStretch()
+
+        self.editor_stack.addWidget(welcome)
+
+        # Editor page
+        editor_page = QWidget()
+        editor_layout = QVBoxLayout(editor_page)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        editor_layout.setSpacing(0)
+
+        vertical_splitter = QSplitter(Qt.Vertical)
+
+        # ── QScintilla code editor ──
+        self.editor = QsciScintilla()
+        self._setup_editor()
+        vertical_splitter.addWidget(self.editor)
+
+        # ── Bottom: output + variable tables ──
+        bottom = QWidget()
+        bottom_layout = QVBoxLayout(bottom)
+        bottom_layout.setContentsMargins(4, 4, 4, 4)
+        bottom_layout.setSpacing(4)
+
+        # Command input
+        input_row = QHBoxLayout()
+        input_row.setSpacing(4)
+        self.manual_input = QLineEdit()
+        self.manual_input.setPlaceholderText("输入 PicoC 命令或表达式...")
+        self.send_button = QPushButton("发送")
+        self.send_button.setFixedWidth(60)
+        input_row.addWidget(self.manual_input, 1)
+        input_row.addWidget(self.send_button)
+        bottom_layout.addLayout(input_row)
+
+        # Output console
+        self.console_view = QPlainTextEdit()
+        self.console_view.setReadOnly(True)
+        self.console_view.setFont(QFont("Cascadia Code", 12))
+        self.console_view.setPlaceholderText("执行结果输出...")
+        self.console_view.setStyleSheet(f"""
+            QPlainTextEdit {{
+                background-color: {BG_PRIMARY};
+                color: {CONSOLE_SOURCE};
+                border: 1px solid #3c3c3c;
+                font-family: 'Cascadia Code', Consolas, monospace;
+                font-size: 12px;
+            }}
+        """)
+        bottom_layout.addWidget(self.console_view, 1)
+
+        # Variable tables
+        var_splitter = QSplitter(Qt.Horizontal)
+        var_splitter.addWidget(self._build_variable_watch_group())
+        var_splitter.addWidget(self._build_watch_group())
+        var_splitter.setSizes([480, 480])
+        bottom_layout.addWidget(var_splitter)
+
+        vertical_splitter.addWidget(bottom)
+        vertical_splitter.setStretchFactor(0, 3)
+        vertical_splitter.setStretchFactor(1, 1)
+        vertical_splitter.setSizes([500, 300])
+
+        editor_layout.addWidget(vertical_splitter)
+
+        self.editor_stack.addWidget(editor_page)
+
+        # Start on welcome page
+        self.editor_stack.setCurrentIndex(0)
+
+        layout.addWidget(self.editor_stack)
+        return right
+
+    def _setup_editor(self) -> None:
+        """Configure QScintilla editor with C lexer, dark theme, and breakpoint margins."""
+        # Lexer for C syntax highlighting
+        lexer = QsciLexerCPP()
+        lexer.setDefaultFont(QFont("Cascadia Code", 13))
+
+        # Dark theme colors for lexer
+        lexer.setColor(QColor("#d4d4d4"))                    # Default text
+        lexer.setColor(QColor("#569cd6"), QsciLexerCPP.Keyword)
+        lexer.setColor(QColor("#4ec9b0"), QsciLexerCPP.KeywordSet2)
+        lexer.setColor(QColor("#ce9178"), QsciLexerCPP.SingleQuotedString)
+        lexer.setColor(QColor("#ce9178"), QsciLexerCPP.DoubleQuotedString)
+        lexer.setColor(QColor("#ce9178"), QsciLexerCPP.RawString)
+        lexer.setColor(QColor("#6a9955"), QsciLexerCPP.Comment)
+        lexer.setColor(QColor("#6a9955"), QsciLexerCPP.CommentLine)
+        lexer.setColor(QColor("#6a9955"), QsciLexerCPP.CommentDoc)
+        lexer.setColor(QColor("#b5cea8"), QsciLexerCPP.Number)
+        lexer.setColor(QColor("#9cdcfe"), QsciLexerCPP.Identifier)
+        lexer.setColor(QColor("#d4d4d4"), QsciLexerCPP.Operator)
+        lexer.setColor(QColor("#808080"), QsciLexerCPP.PreProcessor)
+
+        # Background for all lexer styles
+        for i in range(20):
+            lexer.setPaper(QColor("#1e1e1e"), i)
+        lexer.setDefaultPaper(QColor("#1e1e1e"))
+
+        self.editor.setLexer(lexer)
+        self.editor.setPaper(QColor("#1e1e1e"))
+
+        # Font
+        self.editor.setFont(QFont("Cascadia Code", 13))
+
+        # Line numbers (margin 0)
+        self.editor.setMarginType(0, QsciScintilla.NumberMargin)
+        self.editor.setMarginWidth(0, "00000")
+        self.editor.setMarginsBackgroundColor(QColor("#252526"))
+        self.editor.setMarginsForegroundColor(QColor("#858585"))
+        self.editor.setMarginsFont(QFont("Cascadia Code", 11))
+
+        # Breakpoint margin (margin 1)
+        self.editor.setMarginType(1, QsciScintilla.SymbolMargin)
+        self.editor.setMarginWidth(1, 20)
+        self.editor.setMarginSensitivity(1, True)
+        self.editor.markerDefine(QsciScintilla.Circle, BREAKPOINT_MARKER)
+        self.editor.setMarkerBackgroundColor(QColor("#f44747"), BREAKPOINT_MARKER)
+        self.editor.setMarkerForegroundColor(QColor("#ffffff"), BREAKPOINT_MARKER)
+
+        # Execution arrow marker (margin 1)
+        self.editor.markerDefine(QsciScintilla.SC_MARK_ARROW, EXECUTION_MARKER)
+        self.editor.setMarkerBackgroundColor(QColor("#dcdcaa"), EXECUTION_MARKER)
+        self.editor.setMarkerForegroundColor(QColor("#1e1e1e"), EXECUTION_MARKER)
+
+        # Editor settings
+        self.editor.setCaretForegroundColor(QColor("#d4d4d4"))
+        self.editor.setIndentationGuides(True)
+        self.editor.setIndentationsUseTabs(False)
+        self.editor.setTabWidth(4)
+        self.editor.setAutoIndent(True)
+        self.editor.setFolding(QsciScintilla.BoxedTreeFoldStyle)
+        self.editor.setFoldMarginColors(QColor("#252526"), QColor("#252526"))
+
+        # Brace matching
+        self.editor.setBraceMatching(QsciScintilla.SloppyBraceMatch)
+        self.editor.setMatchedBraceBackgroundColor(QColor("#264f78"))
+        self.editor.setMatchedBraceForegroundColor(QColor("#ffffff"))
+
+        # Connect margin click for breakpoint toggle
+        self.editor.marginClicked.connect(self._on_margin_clicked)
+
+        # Track modification state
+        self.editor.textChanged.connect(self._on_editor_text_changed)
 
     def _build_variable_watch_group(self) -> QGroupBox:
         group = QGroupBox("变量监视")
@@ -129,10 +524,10 @@ class MainWindow(QMainWindow):
 
         toolbar = QHBoxLayout()
         self.watch_add_btn = QPushButton("加监视")
-        self.watch_add_btn.setFixedWidth(60)
+        self.watch_add_btn.setMinimumWidth(60)
         self.watch_add_btn.clicked.connect(self._on_watch_add)
         self.watch_clear_btn = QPushButton("清监视")
-        self.watch_clear_btn.setFixedWidth(60)
+        self.watch_clear_btn.setMinimumWidth(60)
         self.watch_clear_btn.clicked.connect(self._on_watch_clear_all)
         toolbar.addWidget(self.watch_add_btn)
         toolbar.addWidget(self.watch_clear_btn)
@@ -142,13 +537,36 @@ class MainWindow(QMainWindow):
         self.var_table = QTableWidget(0, 3)
         self.var_table.setHorizontalHeaderLabels(["名称", "类型", "值"])
         self.var_table.horizontalHeader().setStretchLastSection(True)
-        self.var_table.setMaximumHeight(120)
         self.var_table.verticalHeader().setVisible(False)
         self.var_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.var_table.setEditTriggers(
             QTableWidget.DoubleClicked | QTableWidget.EditKeyPressed
         )
+        self.var_table.setFont(QFont("Cascadia Code", 12))
         self.var_table.itemChanged.connect(self._on_var_item_changed)
+        self.var_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #1e1e1e;
+                color: #e0e0e0;
+                border: 1px solid #3c3c3c;
+                gridline-color: #3c3c3c;
+            }
+            QTableWidget::item {
+                padding: 2px 4px;
+                color: #e0e0e0;
+            }
+            QTableWidget::item:selected {
+                background-color: #094771;
+                color: #ffffff;
+            }
+            QHeaderView::section {
+                background-color: #2d2d2d;
+                color: #b0b0b0;
+                border: 1px solid #3c3c3c;
+                padding: 3px 6px;
+                font-weight: bold;
+            }
+        """)
 
         layout.addWidget(self.var_table)
         return group
@@ -161,10 +579,33 @@ class MainWindow(QMainWindow):
         self.watch_table = QTableWidget(0, 3)
         self.watch_table.setHorizontalHeaderLabels(["名称", "类型", "值"])
         self.watch_table.horizontalHeader().setStretchLastSection(True)
-        self.watch_table.setMaximumHeight(120)
         self.watch_table.verticalHeader().setVisible(False)
         self.watch_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.watch_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.watch_table.setFont(QFont("Cascadia Code", 12))
+        self.watch_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #1e1e1e;
+                color: #e0e0e0;
+                border: 1px solid #3c3c3c;
+                gridline-color: #3c3c3c;
+            }
+            QTableWidget::item {
+                padding: 2px 4px;
+                color: #e0e0e0;
+            }
+            QTableWidget::item:selected {
+                background-color: #094771;
+                color: #ffffff;
+            }
+            QHeaderView::section {
+                background-color: #2d2d2d;
+                color: #b0b0b0;
+                border: 1px solid #3c3c3c;
+                padding: 3px 6px;
+                font-weight: bold;
+            }
+        """)
 
         remove_row = QHBoxLayout()
         self.watch_remove_btn = QPushButton("移除选中")
@@ -175,91 +616,21 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.watch_table)
         return group
 
-    def _build_var_watch_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.addWidget(self._build_variable_watch_group(), 1)
-        row.addWidget(self._build_watch_group(), 1)
-        return row
+    def _build_status_bar(self) -> None:
+        status_bar = QStatusBar()
+        self.setStatusBar(status_bar)
 
-    def _build_connection_group(self) -> QGroupBox:
-        group = QGroupBox("连接")
-        layout = QGridLayout(group)
-
-        self.port_combo = QComboBox()
-        self.refresh_button = QPushButton("刷新")
-        self.baud_combo = QComboBox()
-        self.baud_combo.addItems(["115200", "230400", "460800", "921600"])
-        self.baud_combo.setCurrentText("115200")
-        self.connect_button = QPushButton("连接")
-        self.disconnect_button = QPushButton("断开")
         self.status_label = QLabel("未连接")
         self.mode_label = QLabel("未连接")
+        self.debug_status_label = QLabel("")
 
-        layout.addWidget(QLabel("串口"), 0, 0)
-        layout.addWidget(self.port_combo, 0, 1)
-        layout.addWidget(self.refresh_button, 0, 2)
-        layout.addWidget(QLabel("波特率"), 0, 3)
-        layout.addWidget(self.baud_combo, 0, 4)
-        layout.addWidget(self.connect_button, 0, 5)
-        layout.addWidget(self.disconnect_button, 0, 6)
-        layout.addWidget(QLabel("状态"), 1, 0)
-        layout.addWidget(self.status_label, 1, 1, 1, 3)
-        layout.addWidget(QLabel("模式"), 1, 4)
-        layout.addWidget(self.mode_label, 1, 5, 1, 2)
-        return group
+        status_bar.addWidget(self.status_label, 1)
+        self.mode_label.setAlignment(Qt.AlignCenter)
+        status_bar.addWidget(self.mode_label)
+        self.debug_status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        status_bar.addPermanentWidget(self.debug_status_label)
 
-    def _build_console_group(self) -> QGroupBox:
-        group = QGroupBox("控制台")
-        layout = QVBoxLayout(group)
-
-        self.console_view = QTextEdit()
-        self.console_view.setReadOnly(True)
-        self.console_view.setAcceptRichText(True)
-        self.console_view.setLineWrapMode(QTextEdit.NoWrap)
-        self.console_view.setPlaceholderText("这里显示 PicoC 代码回显、执行结果、错误信息和批量测试日志。")
-
-        input_row = QHBoxLayout()
-        self.manual_input = QLineEdit()
-        self.manual_input.setPlaceholderText("输入 PicoC 命令或表达式...")
-        self.send_button = QPushButton("发送")
-        input_row.addWidget(self.manual_input, 1)
-        input_row.addWidget(self.send_button)
-
-        layout.addWidget(self.console_view, 1)
-        layout.addLayout(input_row)
-        return group
-
-    def _build_actions_group(self) -> QGroupBox:
-        group = QGroupBox("操作")
-        layout = QGridLayout(group)
-
-        self.file_path_edit = QLineEdit()
-        self.file_path_edit.setPlaceholderText("选择一个 .c 文件或从列表中选中...")
-        self.browse_button = QPushButton("添加文件")
-        self.file_list = QListWidget()
-        self.file_list.setSelectionMode(QListWidget.SingleSelection)
-
-        self.upload_button = QPushButton("执行选中")
-        self.run_all_button = QPushButton("全部执行")
-        self.clear_list_button = QPushButton("清空列表")
-        self.abort_button = QPushButton("中止")
-        self.clear_button = QPushButton("清空控制台")
-        self.save_button = QPushButton("保存日志")
-
-        layout.addWidget(QLabel("当前文件"), 0, 0)
-        layout.addWidget(self.file_path_edit, 0, 1, 1, 3)
-        layout.addWidget(self.browse_button, 0, 4)
-
-        layout.addWidget(QLabel("待测文件"), 1, 0)
-        layout.addWidget(self.file_list, 1, 1, 3, 3)
-        layout.addWidget(self.upload_button, 1, 4)
-        layout.addWidget(self.run_all_button, 2, 4)
-        layout.addWidget(self.abort_button, 3, 4)
-
-        layout.addWidget(self.clear_list_button, 4, 1)
-        layout.addWidget(self.save_button, 4, 4)
-        layout.addWidget(self.clear_button, 5, 4)
-        return group
+    # ── Signals ─────────────────────────────────────────────
 
     def _connect_signals(self) -> None:
         self.refresh_button.clicked.connect(self._refresh_ports)
@@ -268,14 +639,11 @@ class MainWindow(QMainWindow):
         self.send_button.clicked.connect(self._send_manual_input)
         self.manual_input.returnPressed.connect(self._send_manual_input)
 
-        self.browse_button.clicked.connect(self._browse_files)
         self.upload_button.clicked.connect(self._upload_file)
         self.run_all_button.clicked.connect(self._run_all_files)
         self.clear_list_button.clicked.connect(self._clear_file_list)
         self.abort_button.clicked.connect(self._abort_action)
-        self.clear_button.clicked.connect(self._clear_console)
-        self.save_button.clicked.connect(self._save_log)
-        self.file_list.currentItemChanged.connect(self._sync_selected_file_path)
+        self.file_list.currentItemChanged.connect(self._on_file_selected)
 
         self._serial_manager.text_received.connect(self._session.handle_incoming_text)
         self._serial_manager.error_occurred.connect(self._handle_error)
@@ -297,8 +665,8 @@ class MainWindow(QMainWindow):
         self.debug_step_btn.clicked.connect(lambda: self._session.send_debug_step())
         self.debug_eval_btn.clicked.connect(self._on_eval_clicked)
         self.debug_eval_input.returnPressed.connect(self._on_eval_clicked)
-        self.debug_bp_set_btn.clicked.connect(self._on_bp_set_clicked)
-        self.debug_bp_clear_btn.clicked.connect(self._on_bp_clear_clicked)
+
+    # ── Connection ──────────────────────────────────────────
 
     def _refresh_ports(self) -> None:
         current = self.port_combo.currentText()
@@ -326,19 +694,28 @@ class MainWindow(QMainWindow):
         if self._session.send_manual(text):
             self.manual_input.clear()
 
+    # ── File Management ─────────────────────────────────────
+
     def _browse_files(self) -> None:
         filenames, _ = QFileDialog.getOpenFileNames(
-            self,
-            "选择 C 文件",
-            "",
-            "C source (*.c);;All files (*.*)",
+            self, "选择 C 文件", "", "C source (*.c);;All files (*.*)",
         )
         if filenames:
             self._add_files_to_list([Path(name) for name in filenames])
 
-    def _add_files_to_list(self, paths: list[Path]) -> None:
+    def _browse_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "选择文件夹")
+        if folder:
+            folder_path = Path(folder)
+            c_files = sorted(folder_path.rglob("*.c"))
+            if c_files:
+                self._add_files_to_list(c_files)
+            else:
+                self._show_warning("未找到文件", f"文件夹中没有 .c 文件:\n{folder}")
+
+    def _add_files_to_list(self, paths: list) -> None:
         existing = {path.resolve() for path in self._get_all_listed_files()}
-        added_items: list[QListWidgetItem] = []
+        added_items = []
         for path in paths:
             if not path.exists() or not path.is_file() or path.suffix.lower() != ".c":
                 continue
@@ -360,22 +737,42 @@ class MainWindow(QMainWindow):
     def _clear_file_list(self) -> None:
         self.file_list.clear()
         self.file_path_edit.clear()
+        self.editor.clear()
+        self._breakpoints.clear()
+        self._editor_dirty = False
+        self._update_title_dirty()
+        self.tab_label.setText("  未打开文件")
+        self.editor_stack.setCurrentIndex(0)
         self._update_ui_state()
 
-    def _sync_selected_file_path(
-        self,
-        current: QListWidgetItem | None,
-        previous: QListWidgetItem | None,
-    ) -> None:
-        _ = previous
+    def _on_file_selected(self, current, previous) -> None:
+        """When file list selection changes, load source into editor."""
         if current is None:
             self.file_path_edit.clear()
+            self.tab_label.setText("  未打开文件")
+            self.editor_stack.setCurrentIndex(0)
             return
+        if self._editor_dirty and self._auto_save_enabled:
+            self._auto_save()
         path = current.data(FILE_ITEM_ROLE)
-        if isinstance(path, str):
-            self.file_path_edit.setText(path)
+        if not isinstance(path, str) or not path:
+            return
+        self.file_path_edit.setText(path)
+        self._load_source_to_editor(Path(path))
 
-    def _get_selected_file_path(self) -> Path | None:
+    def _load_source_to_editor(self, file_path: Path) -> None:
+        """Read file and display in QScintilla editor, clearing old breakpoints."""
+        source = self._read_source_file(file_path)
+        if source is None:
+            return
+        self._breakpoints.clear()
+        self._editor_dirty = False
+        self.editor.clear()
+        self.editor.setText(source)
+        self.tab_label.setText(f"  {file_path.name}")
+        self.editor_stack.setCurrentIndex(1)
+
+    def _get_selected_file_path(self) -> Path:
         item = self.file_list.currentItem()
         if item is None:
             return None
@@ -384,14 +781,79 @@ class MainWindow(QMainWindow):
             return None
         return Path(path)
 
-    def _get_all_listed_files(self) -> list[Path]:
-        paths: list[Path] = []
+    def _get_all_listed_files(self) -> list:
+        paths = []
         for index in range(self.file_list.count()):
             item = self.file_list.item(index)
             path = item.data(FILE_ITEM_ROLE)
             if isinstance(path, str) and path:
                 paths.append(Path(path))
         return paths
+
+    # ── Breakpoints via margin click ────────────────────────
+
+    def _on_margin_clicked(self, margin, line, state) -> None:
+        """Toggle breakpoint when clicking the symbol margin."""
+        if margin != 1:
+            return
+        # QScintilla line is 0-based, our protocol is 1-based
+        line_no = line + 1
+        if line_no in self._breakpoints:
+            self._breakpoints.discard(line_no)
+            self.editor.markerDelete(line, BREAKPOINT_MARKER)
+            self._session.send_breakpoint_clear(self._bp_filename(), line_no)
+        else:
+            self._breakpoints.add(line_no)
+            self.editor.markerAdd(line, BREAKPOINT_MARKER)
+            self._session.send_breakpoint_set(self._bp_filename(), line_no)
+
+    def _on_editor_text_changed(self) -> None:
+        if not self._editor_dirty:
+            self._editor_dirty = True
+            self._update_title_dirty()
+        if self._auto_save_enabled:
+            self._auto_save_timer.start()
+
+    def _update_title_dirty(self) -> None:
+        title = "MCUStudio 单片机开发调试系统"
+        if self._editor_dirty and not self._auto_save_enabled:
+            title = "* " + title
+        self.setWindowTitle(title)
+
+    def _save_current_file(self) -> None:
+        file_path = self._get_selected_file_path()
+        if file_path is None:
+            self._show_warning("无文件", "请先选择一个文件。")
+            return
+        try:
+            file_path.write_text(self.editor.text(), encoding="utf-8")
+        except Exception as exc:
+            self._show_warning("保存失败", str(exc))
+            return
+        self._editor_dirty = False
+        self._update_title_dirty()
+        self._set_status(f"已保存: {file_path.name}")
+
+    def _on_auto_save_toggled(self, checked: bool) -> None:
+        self._auto_save_enabled = checked
+        # Sync menu action if triggered from somewhere else
+        if self.auto_save_menu_action.isChecked() != checked:
+            self.auto_save_menu_action.setChecked(checked)
+        if not checked:
+            self._auto_save_timer.stop()
+
+    def _auto_save(self) -> None:
+        file_path = self._get_selected_file_path()
+        if file_path is None:
+            return
+        try:
+            file_path.write_text(self.editor.text(), encoding="utf-8")
+        except Exception:
+            return
+        self._editor_dirty = False
+        self._update_title_dirty()
+
+    # ── Upload & Batch ──────────────────────────────────────
 
     def _upload_file(self) -> None:
         file_path = self._get_selected_file_path()
@@ -401,7 +863,7 @@ class MainWindow(QMainWindow):
                 file_path = Path(raw_path)
 
         if file_path is None or not file_path.exists():
-            self._show_warning("文件无效", "请先从列表中选中一个 .c 文件，或输入有效路径。")
+            self._show_warning("文件无效", "请先从列表中选中一个 .c 文件。")
             return
 
         self._batch_active = False
@@ -414,8 +876,8 @@ class MainWindow(QMainWindow):
         self._single_step_mode = False
         self._start_batch(self._get_all_listed_files(), "文件批量测试")
 
-    def _start_batch(self, paths: list[Path], title: str) -> None:
-        valid_paths = [path for path in paths if path.exists() and path.is_file()]
+    def _start_batch(self, paths: list, title: str) -> None:
+        valid_paths = [p for p in paths if p.exists() and p.is_file()]
         if not valid_paths:
             self._show_warning("没有可测试文件", "请先往待测列表中添加 .c 文件。")
             return
@@ -429,7 +891,12 @@ class MainWindow(QMainWindow):
         self._start_upload_for_path(valid_paths[0])
 
     def _start_upload_for_path(self, file_path: Path) -> None:
-        source_text = self._read_source_file(file_path)
+        # Use editor content if this file is currently displayed
+        current_displayed = self._get_selected_file_path()
+        if current_displayed is not None and current_displayed == file_path and self.editor.text():
+            source_text = self.editor.text()
+        else:
+            source_text = self._read_source_file(file_path)
         if source_text is None:
             if self._batch_active:
                 self._batch_results.append((file_path, False, "读取文件失败"))
@@ -438,6 +905,7 @@ class MainWindow(QMainWindow):
 
         self._current_upload_path = file_path
         self.file_path_edit.setText(str(file_path))
+        self._load_source_to_editor(file_path)
         self._execution_separator_pending = True
         if self._batch_active:
             tested = len(self._batch_results)
@@ -445,9 +913,6 @@ class MainWindow(QMainWindow):
             self._append_separator_line(f"测试 [{tested}/{total}]: {file_path.name}")
         else:
             self._append_separator_line(f"上传: {file_path.name}")
-        total_bytes = sum(len(line) + 1 for line in source_text.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
-        if total_bytes <= 8191:
-            self._append_uploaded_source(file_path, source_text)
 
         if not self._session.start_upload(source_text):
             self._execution_separator_pending = False
@@ -457,7 +922,7 @@ class MainWindow(QMainWindow):
                 self._continue_batch_or_finish()
         self._update_ui_state()
 
-    def _read_source_file(self, file_path: Path) -> str | None:
+    def _read_source_file(self, file_path: Path) -> str:
         try:
             return file_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
@@ -478,20 +943,16 @@ class MainWindow(QMainWindow):
 
     def _save_log(self) -> None:
         filename, _ = QFileDialog.getSaveFileName(
-            self,
-            "保存日志",
-            "picoc_console_log.txt",
+            self, "保存日志", "picoc_console_log.txt",
             "Text files (*.txt);;All files (*.*)",
         )
         if not filename:
             return
-
         try:
             Path(filename).write_text(self.console_view.toPlainText(), encoding="utf-8")
         except Exception as exc:
             self._show_warning("保存日志失败", str(exc))
             return
-
         self._set_status(f"日志已保存到 {filename}")
 
     def _handle_connection_changed(self, connected: bool, port_name: str) -> None:
@@ -515,6 +976,8 @@ class MainWindow(QMainWindow):
         self._append_info_line(message)
         self._execution_separator_pending = False
         self.debug_info_label.setText("调试未激活")
+        self.debug_status_label.setText("")
+        self.editor.markerDeleteAll(EXECUTION_MARKER)
 
         if self._batch_active and self._current_upload_path is not None:
             self._batch_results.append((self._current_upload_path, success, message))
@@ -548,11 +1011,9 @@ class MainWindow(QMainWindow):
     def _advance_to_next_file_selection(self) -> None:
         if not self._single_step_mode:
             return
-
         current_row = self.file_list.currentRow()
         if current_row < 0:
             return
-
         next_row = current_row + 1
         if next_row < self.file_list.count():
             self.file_list.setCurrentRow(next_row)
@@ -562,10 +1023,19 @@ class MainWindow(QMainWindow):
         if not active:
             self._execution_separator_pending = False
             self.debug_info_label.setText("调试未激活")
+            self.debug_status_label.setText("")
+            self.editor.markerDeleteAll(EXECUTION_MARKER)
         self._update_ui_state()
+
+    # ── Debug ───────────────────────────────────────────────
 
     def _on_debug_break(self, filename: str, line_no: int) -> None:
         self.debug_info_label.setText(f"已中断: 第{line_no}行")
+        self.debug_status_label.setText(f"调试: 第{line_no}行")
+        # Show execution arrow in editor (0-based)
+        self.editor.markerDeleteAll(EXECUTION_MARKER)
+        self.editor.markerAdd(line_no - 1, EXECUTION_MARKER)
+        self.editor.ensureLineVisible(line_no - 1)
         self._update_ui_state()
         self.var_table.setRowCount(0)
         self._watch_cache.clear()
@@ -574,6 +1044,8 @@ class MainWindow(QMainWindow):
 
     def _on_debug_resumed(self) -> None:
         self.debug_info_label.setText("调试未激活")
+        self.debug_status_label.setText("")
+        self.editor.markerDeleteAll(EXECUTION_MARKER)
         self.var_table.setRowCount(0)
         self._set_watch_values_to_pending()
         self._update_ui_state()
@@ -592,15 +1064,18 @@ class MainWindow(QMainWindow):
 
         name_item = QTableWidgetItem(name)
         name_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        name_item.setForeground(QColor(TEXT_PRIMARY))
         self.var_table.setItem(row, 0, name_item)
 
         type_name = TYPE_MAP.get(type_char, type_char)
         type_item = QTableWidgetItem(type_name)
         type_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        type_item.setForeground(QColor("#569cd6"))
         self.var_table.setItem(row, 1, type_item)
 
         value_item = QTableWidgetItem(value)
         value_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsEditable)
+        value_item.setForeground(QColor(TEXT_PRIMARY))
         self.var_table.setItem(row, 2, value_item)
 
         self._populating = False
@@ -629,9 +1104,7 @@ class MainWindow(QMainWindow):
         name_item = self.var_table.item(item.row(), 0)
         if name_item is None:
             return
-        name = name_item.text()
-        new_value = item.text()
-        self._session.send_debug_set(name, new_value)
+        self._session.send_debug_set(name_item.text(), item.text())
 
     def _on_watch_add(self) -> None:
         selected = self.var_table.selectedItems()
@@ -681,14 +1154,17 @@ class MainWindow(QMainWindow):
 
             name_item = QTableWidgetItem(var_name)
             name_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            name_item.setForeground(QColor(TEXT_PRIMARY))
             self.watch_table.setItem(row, 0, name_item)
 
             type_item = QTableWidgetItem("—")
             type_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            type_item.setForeground(QColor("#569cd6"))
             self.watch_table.setItem(row, 1, type_item)
 
             value_item = QTableWidgetItem("—")
             value_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            value_item.setForeground(QColor(TEXT_PRIMARY))
             self.watch_table.setItem(row, 2, value_item)
 
     def _refresh_watch_table(self) -> None:
@@ -710,11 +1186,11 @@ class MainWindow(QMainWindow):
                 if value_item is not None:
                     changed = (prev_value != "" and prev_value != cur_value)
                     if changed:
-                        value_item.setText(f"{prev_value} → {cur_value}")
-                        value_item.setForeground(QColor("red"))
+                        value_item.setText(f"{prev_value} -> {cur_value}")
+                        value_item.setForeground(QColor(ERROR))
                     else:
                         value_item.setText(cur_value)
-                        value_item.setForeground(QColor("black"))
+                        value_item.setForeground(QColor(TEXT_PRIMARY))
 
                 self._watch_prev[var_name] = cur_value
             else:
@@ -724,34 +1200,13 @@ class MainWindow(QMainWindow):
                     value_item.setForeground(QColor("gray"))
         self.watch_table.resizeColumnsToContents()
 
+    # ── Breakpoints ─────────────────────────────────────────
+
     @staticmethod
     def _bp_filename() -> str:
         return "serial_load"
 
-    def _read_bp_params(self) -> tuple[str, int] | None:
-        try:
-            line = int(self.debug_bp_line.text().strip())
-        except ValueError:
-            self._show_warning("断点", "请输入有效的行号。")
-            return None
-        if line <= 0:
-            self._show_warning("断点", "行号必须大于 0。")
-            return None
-        return self._bp_filename(), line
-
-    def _on_bp_set_clicked(self) -> None:
-        params = self._read_bp_params()
-        if params is None:
-            return
-        filename, line = params
-        self._session.send_breakpoint_set(filename, line)
-
-    def _on_bp_clear_clicked(self) -> None:
-        params = self._read_bp_params()
-        if params is None:
-            return
-        filename, line = params
-        self._session.send_breakpoint_clear(filename, line)
+    # ── Error & Status ──────────────────────────────────────
 
     def _handle_error(self, message: str) -> None:
         self._append_info_line(message)
@@ -770,7 +1225,7 @@ class MainWindow(QMainWindow):
         busy = self._session.mode == "BUSY"
         debug_active = self._session._debug_active
         has_files = self.file_list.count() > 0
-        has_selection = self.file_list.currentItem() is not None or bool(self.file_path_edit.text().strip())
+        has_selection = self.file_list.currentItem() is not None
 
         self.connect_button.setEnabled(not connected)
         self.disconnect_button.setEnabled(connected)
@@ -781,24 +1236,29 @@ class MainWindow(QMainWindow):
         self.manual_input.setEnabled(connected and not busy and not debug_active)
         self.send_button.setEnabled(connected and not busy and not debug_active)
 
-        self.browse_button.setEnabled(connected and not busy)
-        self.clear_list_button.setEnabled(not busy and has_files)
-        self.file_list.setEnabled(not busy)
-        self.file_path_edit.setEnabled(not busy)
+        self.clear_list_button.setEnabled(has_files)
+        # File list is always enabled
+        self.file_list.setEnabled(True)
+        self.file_path_edit.setEnabled(True)
 
         self.upload_button.setEnabled(connected and not busy and has_selection)
         self.run_all_button.setEnabled(connected and not busy and has_files)
         self.abort_button.setEnabled(connected)
-        self.save_button.setEnabled(True)
-        self.clear_button.setEnabled(True)
 
         self.debug_continue_btn.setEnabled(debug_active)
         self.debug_step_btn.setEnabled(debug_active)
         self.debug_eval_input.setEnabled(debug_active)
         self.debug_eval_btn.setEnabled(debug_active)
-        self.debug_bp_line.setEnabled(connected and not busy)
-        self.debug_bp_set_btn.setEnabled(connected and not busy)
-        self.debug_bp_clear_btn.setEnabled(connected and not busy)
+
+        mode = self._session.mode
+        if mode == "REPL":
+            self.mode_label.setStyleSheet(f"color: {SUCCESS}; padding: 0 8px;")
+        elif mode in ("LOAD", "BUSY"):
+            self.mode_label.setStyleSheet(f"color: {WARNING}; padding: 0 8px;")
+        else:
+            self.mode_label.setStyleSheet(f"color: {TEXT_SECONDARY}; padding: 0 8px;")
+
+    # ── Console Output ──────────────────────────────────────
 
     def _append_console_text(self, text: str) -> None:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -813,15 +1273,6 @@ class MainWindow(QMainWindow):
             self._append_remote_line(self._console_line_buffer)
             self._console_line_buffer = ""
 
-    def _append_uploaded_source(self, file_path: Path, source_text: str) -> None:
-        self._append_separator_line(f"上传文件 {file_path.name}")
-        self._append_info_line(f"文件路径: {file_path}")
-        for line in source_text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-            self._append_html_line(line, "#202020")
-
-    def _append_local_command(self, text: str) -> None:
-        self._append_html_line(text, "#202020")
-
     def _append_remote_line(self, line: str) -> None:
         if not line.strip():
             return
@@ -830,27 +1281,28 @@ class MainWindow(QMainWindow):
 
         lowered = line.lower()
         if any(keyword in lowered for keyword in ERROR_KEYWORDS):
-            color = "#c0392b"
+            color = CONSOLE_ERROR
         elif "ready for next file" in lowered:
-            color = "#1f7a1f"
+            color = CONSOLE_SUCCESS
         elif "picoc>" in line or "load>" in line:
-            color = "#1f5aa6"
+            color = CONSOLE_PROMPT
         else:
-            color = "#202020"
+            color = CONSOLE_SOURCE
 
-        self._append_html_line(line, color)
+        self._append_colored_line(line, color)
 
     def _append_info_line(self, text: str) -> None:
-        self._append_html_line(text, "#666666")
+        self._append_colored_line(text, CONSOLE_INFO)
 
     def _append_separator_line(self, title: str) -> None:
-        self._append_html_line(f"---------------- {title} ----------------", "#8a6d3b")
+        self._append_colored_line(f"---------------- {title} ----------------", CONSOLE_SEP)
 
-    def _append_html_line(self, text: str, color: str) -> None:
-        escaped = html.escape(text)
-        self.console_view.append(
-            f'<span style="color:{color}; white-space:pre;">{escaped}</span>'
-        )
+    def _append_colored_line(self, text: str, color: str) -> None:
+        cursor = self.console_view.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.insertText(text + "\n", fmt)
         scrollbar = self.console_view.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -871,9 +1323,7 @@ class MainWindow(QMainWindow):
             return True
         if stripped in {":cont", ":step"}:
             return True
-        if stripped.startswith(":eval "):
-            return True
-        if stripped.startswith(":var "):
+        if stripped.startswith(":eval ") or stripped.startswith(":var "):
             return True
         if stripped.startswith(":bkpt ") or stripped.startswith(":bkptclear "):
             return True
