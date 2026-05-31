@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QIcon
+import os
+from PyQt5.QtCore import Qt, QTimer, QSize, QFileInfo
+from PyQt5.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QIcon, QFileIconProvider
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -291,10 +292,12 @@ class MainWindow(QMainWindow):
 
         # ── 树形文件浏览器 ──
         self.file_tree = QTreeWidget()
-        self.file_tree.setHeaderHidden(True)
+        self.file_tree.setColumnCount(1)
+        self.file_tree.setHeaderLabels(["资源管理器"])
+        self.file_tree.setIconSize(QSize(18, 18))
+        self.file_tree.setSelectionMode(QTreeWidget.SingleSelection)
         self.file_tree.setAnimated(True)
         self.file_tree.setIndentation(16)
-        self.file_tree.setSelectionMode(QTreeWidget.SingleSelection)
         self.file_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.file_tree.customContextMenuRequested.connect(self._show_tree_context_menu)
         self.file_tree.itemDoubleClicked.connect(self._on_tree_item_double_clicked)
@@ -317,15 +320,12 @@ class MainWindow(QMainWindow):
             QTreeWidget::item:hover {
                 background-color: #2a2d2e;
             }
-            QTreeWidget::branch:has-children:!has-siblings:closed,
-            QTreeWidget::branch:closed:has-children:has-siblings {
-                border-image: none;
-                image: url(none);
-            }
-            QTreeWidget::branch:open:has-children:!has-siblings,
-            QTreeWidget::branch:open:has-children:has-siblings {
-                border-image: none;
-                image: url(none);
+            QHeaderView::section {
+                background-color: #2d2d2d;
+                color: #b0b0b0;
+                border: 1px solid #3c3c3c;
+                padding: 3px 6px;
+                font-weight: bold;
             }
         """)
         layout.addWidget(self.file_tree, 1)
@@ -347,6 +347,7 @@ class MainWindow(QMainWindow):
         # ── 状态变量 ──
         self._current_root = None
         self._file_item_map = {}  # path -> QTreeWidgetItem
+        self._icon_provider = QFileIconProvider()
 
         return sidebar
 
@@ -830,9 +831,10 @@ class MainWindow(QMainWindow):
 
     def _browse_folder(self) -> None:
         """Open folder and populate tree."""
-        folder = QFileDialog.getExistingDirectory(self, "选择文件夹")
-        if folder:
-            self._load_folder(Path(folder))
+        folder = QFileDialog.getExistingDirectory(self, "选取文件夹", "./")
+        if not folder:
+            return
+        self._load_folder(Path(folder))
 
     def _load_folder(self, folder_path: Path) -> None:
         """Load folder into tree view."""
@@ -843,44 +845,79 @@ class MainWindow(QMainWindow):
         self._file_item_map.clear()
         self.file_tree.clear()
 
-        # 添加根节点
-        root_item = QTreeWidgetItem(self.file_tree, [folder_path.name])
-        root_item.setData(0, Qt.UserRole, str(folder_path))
-        root_item.setExpanded(True)
-        self._file_item_map[str(folder_path)] = root_item
+        # 获取系统图标
+        file_info = QFileInfo(str(folder_path))
+        icon = self._icon_provider.icon(file_info)
 
-        # 递归添加子节点
-        self._populate_tree(root_item, folder_path)
+        # 创建根节点
+        root = QTreeWidgetItem(self.file_tree)
+        root.setText(0, folder_path.name)
+        root.setIcon(0, icon)
+        root.setData(0, Qt.UserRole, str(folder_path))
+        root.setExpanded(True)
+        self._file_item_map[str(folder_path)] = root
+
+        # 递归创建子节点
+        self._create_tree(str(folder_path), root)
 
         self.file_path_edit.setText(str(folder_path))
         self._append_info_line(f"已打开文件夹: {folder_path}")
         self._update_ui_state()
 
-    def _populate_tree(self, parent_item: QTreeWidgetItem, folder_path: Path) -> None:
-        """Recursively populate tree with folder contents."""
+    def _create_tree(self, path: str, parent_item: QTreeWidgetItem) -> None:
+        """Recursively create tree nodes."""
         try:
-            entries = sorted(folder_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            entries = os.listdir(path)
         except PermissionError:
             return
 
+        # 排序：文件夹在前，文件在后
+        dirs = []
+        files = []
         for entry in entries:
-            # 跳过隐藏文件和系统文件
-            if entry.name.startswith('.'):
-                continue
+            full_path = os.path.join(path, entry)
+            if os.path.isdir(full_path):
+                if not entry.startswith('.'):
+                    dirs.append(entry)
+            else:
+                # 只显示支持的文件类型
+                ext = os.path.splitext(entry)[1].lower()
+                if ext in ('.c', '.h', '.txt', '.py', '.md'):
+                    files.append(entry)
 
-            if entry.is_dir():
-                # 添加文件夹
-                dir_item = QTreeWidgetItem(parent_item, [entry.name])
-                dir_item.setData(0, Qt.UserRole, str(entry))
-                dir_item.setForeground(0, QColor("#569cd6"))  # 文件夹用蓝色
-                self._file_item_map[str(entry)] = dir_item
-                # 递归添加子目录
-                self._populate_tree(dir_item, entry)
-            elif entry.suffix.lower() in ('.c', '.h', '.txt', '.py', '.md'):
-                # 添加文件
-                file_item = QTreeWidgetItem(parent_item, [entry.name])
-                file_item.setData(0, Qt.UserRole, str(entry))
-                self._file_item_map[str(entry)] = file_item
+        dirs.sort(key=str.lower)
+        files.sort(key=str.lower)
+
+        # 先添加文件夹
+        for entry in dirs:
+            full_path = os.path.join(path, entry)
+
+            # 获取系统图标
+            file_info = QFileInfo(full_path)
+            icon = self._icon_provider.icon(file_info)
+
+            child = QTreeWidgetItem(parent_item)
+            child.setText(0, entry)
+            child.setIcon(0, icon)
+            child.setData(0, Qt.UserRole, full_path)
+            self._file_item_map[full_path] = child
+
+            # 递归添加子目录
+            self._create_tree(full_path, child)
+
+        # 再添加文件
+        for entry in files:
+            full_path = os.path.join(path, entry)
+
+            # 获取系统图标
+            file_info = QFileInfo(full_path)
+            icon = self._icon_provider.icon(file_info)
+
+            child = QTreeWidgetItem(parent_item)
+            child.setText(0, entry)
+            child.setIcon(0, icon)
+            child.setData(0, Qt.UserRole, full_path)
+            self._file_item_map[full_path] = child
 
     def _refresh_tree(self) -> None:
         """Refresh the tree view."""
