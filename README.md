@@ -78,7 +78,7 @@ The host and device communicate via structured UART protocol extensions:
 - [MDK-ARM](MDK-ARM): Keil project files
 - [tools/picoc_host/src](tools/picoc_host/src): host tool source code
 - [tools/picoc_host/src/README.md](tools/picoc_host/src/README.md): host tool usage
-- [docs/移植流程.md](docs/%E7%A7%BB%E6%A4%8D%E6%B5%81%E7%A8%8B.md): porting workflow notes
+- [docs/移植注意事项.md](docs/%E7%A7%BB%E6%A4%8D%E6%B3%A8%E6%84%8F%E4%BA%8B%E9%A1%B9.md): porting notes, memory layout and hardware registration guide
 - [docs/调试使用说明.md](docs/%E8%B0%83%E8%AF%95%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.md): breakpoint, single-step, variable edit, and watch guide
 
 ## Current Scope

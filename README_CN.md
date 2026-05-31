@@ -85,7 +85,7 @@
 - [MDK-ARM](MDK-ARM)：Keil 工程文件
 - [tools/picoc_host/src](tools/picoc_host/src)：上位机源码
 - [tools/picoc_host/src/README.md](tools/picoc_host/src/README.md)：上位机使用说明
-- [docs/移植流程.md](docs/%E7%A7%BB%E6%A4%8D%E6%B5%81%E7%A8%8B.md)：移植流程总结
+- [docs/移植注意事项.md](docs/%E7%A7%BB%E6%A4%8D%E6%B3%A8%E6%84%8F%E4%BA%8B%E9%A1%B9.md)：移植注意事项与内存/硬件注册指南
 - [docs/调试使用说明.md](docs/%E8%B0%83%E8%AF%95%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.md)：断点、单步、变量修改与 Watch 说明
 
 ## 当前范围
