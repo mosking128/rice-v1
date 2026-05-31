@@ -204,6 +204,20 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        new_c_action = file_menu.addAction("新建 C 文件(&N)")
+        new_c_action.setShortcut("Ctrl+N")
+        new_c_action.triggered.connect(self._new_c_file)
+
+        new_txt_action = file_menu.addAction("新建文本文档(&T)")
+        new_txt_action.setShortcut("Ctrl+Shift+N")
+        new_txt_action.triggered.connect(self._new_text_file)
+
+        new_folder_action = file_menu.addAction("新建文件夹(&F)")
+        new_folder_action.setShortcut("Ctrl+Shift+F")
+        new_folder_action.triggered.connect(self._new_folder)
+
+        file_menu.addSeparator()
+
         self.auto_save_menu_action = file_menu.addAction("自动保存")
         self.auto_save_menu_action.setCheckable(True)
         self.auto_save_menu_action.setChecked(True)
@@ -695,6 +709,107 @@ class MainWindow(QMainWindow):
             self.manual_input.clear()
 
     # ── File Management ─────────────────────────────────────
+
+    def _new_c_file(self) -> None:
+        """Create a new C source file in the current folder."""
+        current_folder = self._get_current_folder()
+        if current_folder is None:
+            self._show_warning("未选择文件夹", "请先选择一个文件夹。")
+            return
+
+        filename, ok = QFileDialog.getSaveFileName(
+            self, "新建 C 文件", str(current_folder / "untitled.c"),
+            "C source (*.c);;All files (*.*)",
+        )
+        if not ok or not filename:
+            return
+
+        file_path = Path(filename)
+        if file_path.exists():
+            self._show_warning("文件已存在", f"文件 {file_path.name} 已存在。")
+            return
+
+        try:
+            file_path.write_text("#include <stdio.h>\n\nint main() {\n    return 0;\n}\n", encoding="utf-8")
+        except Exception as exc:
+            self._show_warning("创建文件失败", str(exc))
+            return
+
+        self._add_files_to_list([file_path])
+        self._set_status(f"已创建: {file_path.name}")
+
+    def _new_text_file(self) -> None:
+        """Create a new text file in the current folder."""
+        current_folder = self._get_current_folder()
+        if current_folder is None:
+            self._show_warning("未选择文件夹", "请先选择一个文件夹。")
+            return
+
+        filename, ok = QFileDialog.getSaveFileName(
+            self, "新建文本文档", str(current_folder / "untitled.txt"),
+            "Text files (*.txt);;All files (*.*)",
+        )
+        if not ok or not filename:
+            return
+
+        file_path = Path(filename)
+        if file_path.exists():
+            self._show_warning("文件已存在", f"文件 {file_path.name} 已存在。")
+            return
+
+        try:
+            file_path.write_text("", encoding="utf-8")
+        except Exception as exc:
+            self._show_warning("创建文件失败", str(exc))
+            return
+
+        self._set_status(f"已创建: {file_path.name}")
+
+    def _new_folder(self) -> None:
+        """Create a new folder in the current folder."""
+        current_folder = self._get_current_folder()
+        if current_folder is None:
+            self._show_warning("未选择文件夹", "请先选择一个文件夹。")
+            return
+
+        folder_name, ok = QFileDialog.getSaveFileName(
+            self, "新建文件夹", str(current_folder / "new_folder"),
+            "All files (*.*)",
+        )
+        if not ok or not folder_name:
+            return
+
+        folder_path = Path(folder_name)
+        if folder_path.exists():
+            self._show_warning("文件夹已存在", f"文件夹 {folder_path.name} 已存在。")
+            return
+
+        try:
+            folder_path.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self._show_warning("创建文件夹失败", str(exc))
+            return
+
+        self._set_status(f"已创建文件夹: {folder_path.name}")
+
+    def _get_current_folder(self) -> Path:
+        """Get the current folder path from the file list or path edit."""
+        # Try to get from file path edit
+        current_path = self.file_path_edit.text().strip()
+        if current_path:
+            path = Path(current_path)
+            if path.is_dir():
+                return path
+            return path.parent
+
+        # Try to get from first file in list
+        if self.file_list.count() > 0:
+            item = self.file_list.item(0)
+            path_str = item.data(FILE_ITEM_ROLE)
+            if isinstance(path_str, str) and path_str:
+                return Path(path_str).parent
+
+        return None
 
     def _browse_files(self) -> None:
         filenames, _ = QFileDialog.getOpenFileNames(
