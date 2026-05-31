@@ -938,7 +938,7 @@ class MainWindow(QMainWindow):
         """When double-clicking item in tree, open file in editor."""
         if item is None:
             return
-        path_str = item.data(column, Qt.UserRole)
+        path_str = item.data(0, Qt.UserRole)  # 始终使用列0
         if not path_str:
             return
         file_path = Path(path_str)
