@@ -4,7 +4,8 @@ from pathlib import Path
 
 import os
 from PyQt5.QtCore import Qt, QTimer, QSize, QFileInfo
-from PyQt5.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QIcon, QFileIconProvider
+from PyQt5.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QIcon
+from PyQt5.QtWidgets import QFileIconProvider
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
