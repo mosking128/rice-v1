@@ -82,6 +82,12 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
         self.setMinimumSize(900, 600)
 
+        # Global font with antialiasing
+        from PyQt5.QtWidgets import QApplication
+        ui_font = QFont("Consolas", 10)
+        ui_font.setStyleStrategy(QFont.PreferAntialias)
+        QApplication.instance().setFont(ui_font)
+
         self._console_line_buffer = ""
         self._upload_active = False
         self._execution_separator_pending = False
@@ -454,7 +460,9 @@ class MainWindow(QMainWindow):
         """Configure QScintilla editor with C lexer, dark theme, and breakpoint margins."""
         # Lexer for C syntax highlighting
         lexer = QsciLexerCPP()
-        lexer.setDefaultFont(QFont("Cascadia Code", 13))
+        code_font = QFont("Consolas", 13)
+        code_font.setStyleStrategy(QFont.PreferAntialias)
+        lexer.setDefaultFont(code_font)
 
         # Dark theme colors for lexer
         lexer.setColor(QColor("#d4d4d4"))                    # Default text
@@ -471,23 +479,26 @@ class MainWindow(QMainWindow):
         lexer.setColor(QColor("#d4d4d4"), QsciLexerCPP.Operator)
         lexer.setColor(QColor("#808080"), QsciLexerCPP.PreProcessor)
 
-        # Background for all lexer styles
+        # Background and font for all lexer styles
         for i in range(20):
             lexer.setPaper(QColor("#1e1e1e"), i)
+            lexer.setFont(code_font, i)
         lexer.setDefaultPaper(QColor("#1e1e1e"))
 
         self.editor.setLexer(lexer)
         self.editor.setPaper(QColor("#1e1e1e"))
 
         # Font
-        self.editor.setFont(QFont("Cascadia Code", 13))
+        self.editor.setFont(code_font)
 
         # Line numbers (margin 0)
+        margin_font = QFont("Consolas", 11)
+        margin_font.setStyleStrategy(QFont.PreferAntialias)
         self.editor.setMarginType(0, QsciScintilla.NumberMargin)
         self.editor.setMarginWidth(0, "00000")
         self.editor.setMarginsBackgroundColor(QColor("#252526"))
         self.editor.setMarginsForegroundColor(QColor("#858585"))
-        self.editor.setMarginsFont(QFont("Cascadia Code", 11))
+        self.editor.setMarginsFont(margin_font)
 
         # Breakpoint margin (margin 1)
         self.editor.setMarginType(1, QsciScintilla.SymbolMargin)
@@ -1228,7 +1239,7 @@ class MainWindow(QMainWindow):
         self._session.set_connected(connected)
         if connected:
             self._append_info_line(f"已连接到 {port_name}")
-            QTimer.singleShot(800, lambda: self._session.send_ping())
+            QTimer.singleShot(800, self._reset_on_connect)
         else:
             self._append_info_line("已断开连接。")
             self._execution_separator_pending = False
@@ -1236,6 +1247,10 @@ class MainWindow(QMainWindow):
             self._batch_queue.clear()
             self._single_step_mode = False
         self._update_ui_state()
+
+    def _reset_on_connect(self) -> None:
+        self._session.send_reset()
+        QTimer.singleShot(500, lambda: self._session.send_ping())
 
     def _handle_mode_changed(self, mode: str) -> None:
         self.mode_label.setText(self._translate_mode(mode))

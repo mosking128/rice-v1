@@ -135,6 +135,12 @@ class PicocSession(QObject):
         self.send_requested.emit(":ping\r\n")
         return True
 
+    def send_reset(self) -> bool:
+        if not self._connected:
+            return False
+        self.send_requested.emit(":reset\r\n")
+        return True
+
     def start_upload(self, source_text: str) -> bool:
         if not self._connected:
             self.status_changed.emit("当前未连接。")

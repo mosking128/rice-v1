@@ -219,40 +219,52 @@ QLabel {{
     background: transparent;
 }}
 
-/* ── ScrollBar ──────────────────────────────────────── */
+/* ── ScrollBar (VS Code style) ──────────────────────── */
 QScrollBar:vertical {{
-    background-color: {BG_PRIMARY};
-    width: 10px;
+    background-color: transparent;
+    width: 12px;
     border: none;
+    margin: 0;
 }}
 QScrollBar::handle:vertical {{
-    background-color: {BORDER};
+    background-color: rgba(121, 121, 121, 0.4);
     min-height: 30px;
     border-radius: 5px;
-    margin: 2px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
 }}
 QScrollBar::handle:vertical:hover {{
-    background-color: {TEXT_SECONDARY};
+    background-color: rgba(121, 121, 121, 0.7);
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
+    background: none;
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: none;
 }}
 QScrollBar:horizontal {{
-    background-color: {BG_PRIMARY};
-    height: 10px;
+    background-color: transparent;
+    height: 12px;
     border: none;
+    margin: 0;
 }}
 QScrollBar::handle:horizontal {{
-    background-color: {BORDER};
+    background-color: rgba(121, 121, 121, 0.4);
     min-width: 30px;
     border-radius: 5px;
-    margin: 2px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
 }}
 QScrollBar::handle:horizontal:hover {{
-    background-color: {TEXT_SECONDARY};
+    background-color: rgba(121, 121, 121, 0.7);
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0;
+    background: none;
+}}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: none;
 }}
 
 /* ── Frame ──────────────────────────────────────────── */

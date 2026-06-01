@@ -88,6 +88,7 @@ static uint8_t g_load_buffer[PICOC_APP_LOAD_BUFFER_SIZE];
 static uint32_t g_source_length = 0U;
 static uint32_t g_load_length = 0U;
 static uint8_t g_prompt_pending = 0U;
+static uint8_t g_reset_pending = 0U;
 static uint8_t g_last_char_was_cr = 0U;
 static uint32_t g_drain_idle_count = 0U;
 static PicocApp_Mode g_mode = PICOC_APP_MODE_REPL;
@@ -174,6 +175,14 @@ void PicocApp_Task(void)
     if (g_prompt_pending != 0U && rx_len == 0U)
     {
         PicocApp_ShowPrompt();
+    }
+
+    /* 延迟重初始化：在无新数据到达时执行，避免阻塞命令处理 */
+    if (g_reset_pending != 0U && rx_len == 0U)
+    {
+        g_reset_pending = 0U;
+        PicocCleanup(&g_picoc);
+        PicocInitialise(&g_picoc, PICOC_APP_STACK_SIZE);
     }
 }
 
@@ -310,6 +319,7 @@ static void PicocApp_HandleReplChar(uint8_t ch)
             PicocApp_ResetLoadBuffer();
             g_mode = PICOC_APP_MODE_REPL;
             g_prompt_text = INTERACTIVE_PROMPT_STATEMENT;
+            g_reset_pending = 1U;
             PicocApp_SendResponse(PICOC_APP_RESP_OK);
             g_prompt_pending = 1U;
             return;
@@ -462,6 +472,7 @@ static void PicocApp_HandleLoadChar(uint8_t ch)
             PicocApp_ResetLineBuffer();
             PicocApp_ResetLoadBuffer();
             PicocApp_LeaveLoadMode();
+            g_reset_pending = 1U;
             PicocApp_SendResponse(PICOC_APP_RESP_OK);
             g_prompt_pending = 1U;
             return;
