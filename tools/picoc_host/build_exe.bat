@@ -30,7 +30,7 @@ python -m PyInstaller ^
   --noconfirm ^
   --clean ^
   --windowed ^
-  --name PicoCHost ^
+  --name MCUStudio ^
   --specpath "%BUILD_DIR%" ^
   --workpath "%BUILD_DIR%" ^
   --distpath "%DIST_DIR%" ^
@@ -49,15 +49,15 @@ if errorlevel 1 (
 
 if exist "%RELEASE_DIR%" rd /s /q "%RELEASE_DIR%"
 mkdir "%RELEASE_DIR%"
-xcopy /e /i /y "%DIST_DIR%\PicoCHost" "%RELEASE_DIR%\PicoCHost" >nul
+xcopy /e /i /y "%DIST_DIR%\MCUStudio" "%RELEASE_DIR%\MCUStudio" >nul
 copy "%SRC_DIR%\README.md" "%RELEASE_DIR%\README.txt" >nul
-copy "%SRC_DIR%\README.md" "%RELEASE_DIR%\PicoCHost\README.txt" >nul
+copy "%SRC_DIR%\README.md" "%RELEASE_DIR%\MCUStudio\README.txt" >nul
 
 echo.
 echo Build finished.
 echo Source folder: %SRC_DIR%
-echo EXE folder: %DIST_DIR%\PicoCHost
-echo Release folder: %RELEASE_DIR%\PicoCHost
+echo EXE folder: %DIST_DIR%\MCUStudio
+echo Release folder: %RELEASE_DIR%\MCUStudio
 echo.
 pause
 
