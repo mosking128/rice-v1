@@ -526,6 +526,8 @@ class MainWindow(QMainWindow):
         search_row.addWidget(self.var_search)
         layout.addLayout(search_row)
 
+        from theme import get_theme as _gt3
+        _tc3, _ = _gt3(self._current_theme)
         self.var_table = QTableWidget(0, 3)
         self.var_table.setHorizontalHeaderLabels(["名称", "类型", "值"])
         self.var_table.horizontalHeader().setStretchLastSection(True)
@@ -535,6 +537,10 @@ class MainWindow(QMainWindow):
             QTableWidget.DoubleClicked | QTableWidget.EditKeyPressed
         )
         self.var_table.setFont(QFont("Cascadia Code", 12))
+        self.var_table.setStyleSheet(
+            f"QTableWidget {{ background-color: {_tc3['BG_PRIMARY']}; color: {_tc3['TEXT_PRIMARY']}; gridline-color: {_tc3['BORDER']}; selection-background-color: {_tc3['BG_SELECTED']}; }}"
+            f"QHeaderView::section {{ background-color: {_tc3['BG_TOOLBAR']}; color: {_tc3['TEXT_SECONDARY']}; border: 1px solid {_tc3['BORDER']}; font-weight: bold; }}"
+        )
         self.var_table.itemChanged.connect(self._on_var_item_changed)
 
         layout.addWidget(self.var_table)
@@ -545,6 +551,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(group)
         layout.setContentsMargins(4, 4, 4, 4)
 
+        from theme import get_theme as _gt4
+        _tc4, _ = _gt4(self._current_theme)
         self.watch_table = QTableWidget(0, 3)
         self.watch_table.setHorizontalHeaderLabels(["名称", "类型", "值"])
         self.watch_table.horizontalHeader().setStretchLastSection(True)
@@ -552,6 +560,10 @@ class MainWindow(QMainWindow):
         self.watch_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.watch_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.watch_table.setFont(QFont("Cascadia Code", 12))
+        self.watch_table.setStyleSheet(
+            f"QTableWidget {{ background-color: {_tc4['BG_PRIMARY']}; color: {_tc4['TEXT_PRIMARY']}; gridline-color: {_tc4['BORDER']}; selection-background-color: {_tc4['BG_SELECTED']}; }}"
+            f"QHeaderView::section {{ background-color: {_tc4['BG_TOOLBAR']}; color: {_tc4['TEXT_SECONDARY']}; border: 1px solid {_tc4['BORDER']}; font-weight: bold; }}"
+        )
 
         remove_row = QHBoxLayout()
         self.watch_remove_btn = QPushButton("移除选中")
@@ -1125,6 +1137,15 @@ class MainWindow(QMainWindow):
             self.console_view.setStyleSheet(
                 f"QPlainTextEdit {{ background-color: {colors['BG_PRIMARY']}; color: {colors['CONSOLE_SOURCE']}; border: 1px solid {colors['BORDER']}; selection-background-color: {colors['BG_SELECTED']}; }}"
             )
+        # Variable / watch tables
+        _tbl_style = (
+            f"QTableWidget {{ background-color: {colors['BG_PRIMARY']}; color: {tp}; gridline-color: {colors['BORDER']}; selection-background-color: {colors['BG_SELECTED']}; }}"
+            f"QHeaderView::section {{ background-color: {colors['BG_TOOLBAR']}; color: {ts}; border: 1px solid {colors['BORDER']}; font-weight: bold; }}"
+        )
+        for tbl_name in ('var_table', 'watch_table'):
+            tbl = getattr(self, tbl_name, None)
+            if tbl is not None:
+                tbl.setStyleSheet(_tbl_style)
         # Welcome page
         for attr in ('_welcome', '_welcome_title', '_welcome_subtitle',
                       '_welcome_hint', '_welcome_shortcut'):
@@ -1327,8 +1348,6 @@ class MainWindow(QMainWindow):
     # ── Debug ───────────────────────────────────────────────
 
     def _on_debug_break(self, filename: str, line_no: int) -> None:
-        self.debug_info_label.setText(f"已中断: 第{line_no}行")
-        self.debug_status_label.setText(f"调试: 第{line_no}行")
         # Show execution arrow in editor (0-based)
         self.editor.markerDeleteAll(EXECUTION_MARKER)
         self.editor.markerAdd(line_no - 1, EXECUTION_MARKER)
@@ -1340,8 +1359,6 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(50, lambda: self._session.send_debug_vars())
 
     def _on_debug_resumed(self) -> None:
-        self.debug_info_label.setText("调试未激活")
-        self.debug_status_label.setText("")
         self.editor.markerDeleteAll(EXECUTION_MARKER)
         self.var_table.setRowCount(0)
         self._set_watch_values_to_pending()
@@ -1359,21 +1376,21 @@ class MainWindow(QMainWindow):
         row = self.var_table.rowCount()
         self.var_table.insertRow(row)
 
+        tc = self._theme_colors or {}
         name_item = QTableWidgetItem(name)
         name_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-        name_item.setForeground(QColor(TEXT_PRIMARY))
+        name_item.setForeground(QColor(tc.get('TEXT_PRIMARY', '#e0e0e0')))
         self.var_table.setItem(row, 0, name_item)
 
         type_name = TYPE_MAP.get(type_char, type_char)
         type_item = QTableWidgetItem(type_name)
         type_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-        from theme import TEXT_ACCENT
-        type_item.setForeground(QColor(TEXT_ACCENT))
+        type_item.setForeground(QColor(tc.get('TEXT_ACCENT', '#569cd6')))
         self.var_table.setItem(row, 1, type_item)
 
         value_item = QTableWidgetItem(value)
         value_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsEditable)
-        value_item.setForeground(QColor(TEXT_PRIMARY))
+        value_item.setForeground(QColor(tc.get('TEXT_PRIMARY', '#e0e0e0')))
         self.var_table.setItem(row, 2, value_item)
 
         self._populating = False
@@ -1455,13 +1472,15 @@ class MainWindow(QMainWindow):
             self.var_table.setRowHidden(row, not match)
 
     def _set_watch_values_to_pending(self) -> None:
+        tc = self._theme_colors or {}
         for row in range(self.watch_table.rowCount()):
             item = self.watch_table.item(row, 2)
             if item is not None:
                 item.setText("—")
-                item.setForeground(QColor("gray"))
+                item.setForeground(QColor(tc.get('TEXT_SECONDARY', '#b0b0b0')))
 
     def _rebuild_watch_rows(self) -> None:
+        tc = self._theme_colors or {}
         self.watch_table.setRowCount(0)
         for var_name in sorted(self._watch_vars):
             row = self.watch_table.rowCount()
@@ -1469,21 +1488,21 @@ class MainWindow(QMainWindow):
 
             name_item = QTableWidgetItem(var_name)
             name_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-            name_item.setForeground(QColor(TEXT_PRIMARY))
+            name_item.setForeground(QColor(tc.get('TEXT_PRIMARY', '#e0e0e0')))
             self.watch_table.setItem(row, 0, name_item)
 
             type_item = QTableWidgetItem("—")
             type_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-            from theme import TEXT_ACCENT
-            type_item.setForeground(QColor(TEXT_ACCENT))
+            type_item.setForeground(QColor(tc.get('TEXT_ACCENT', '#569cd6')))
             self.watch_table.setItem(row, 1, type_item)
 
             value_item = QTableWidgetItem("—")
             value_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-            value_item.setForeground(QColor(TEXT_PRIMARY))
+            value_item.setForeground(QColor(tc.get('TEXT_PRIMARY', '#e0e0e0')))
             self.watch_table.setItem(row, 2, value_item)
 
     def _refresh_watch_table(self) -> None:
+        tc = self._theme_colors or {}
         for row in range(self.watch_table.rowCount()):
             name_item = self.watch_table.item(row, 0)
             if name_item is None:
@@ -1503,17 +1522,17 @@ class MainWindow(QMainWindow):
                     changed = (prev_value != "" and prev_value != cur_value)
                     if changed:
                         value_item.setText(f"{prev_value} -> {cur_value}")
-                        value_item.setForeground(QColor(ERROR))
+                        value_item.setForeground(QColor(tc.get('ERROR', '#f44747')))
                     else:
                         value_item.setText(cur_value)
-                        value_item.setForeground(QColor(TEXT_PRIMARY))
+                        value_item.setForeground(QColor(tc.get('TEXT_PRIMARY', '#e0e0e0')))
 
                 self._watch_prev[var_name] = cur_value
             else:
                 value_item = self.watch_table.item(row, 2)
                 if value_item is not None:
                     value_item.setText("—")
-                    value_item.setForeground(QColor("gray"))
+                    value_item.setForeground(QColor(tc.get('TEXT_SECONDARY', '#b0b0b0')))
         self.watch_table.resizeColumnsToContents()
 
     # ── Breakpoints ─────────────────────────────────────────

@@ -188,9 +188,6 @@ class PicocSession(QObject):
             self.status_changed.emit("当前未连接。")
             return False
         self.send_requested.emit(f":bkpt {filename} {line}\r\n")
-        info = f"设置断点: 第{line}行"
-        self.console_text.emit(f"{info}\r\n")
-        self.status_changed.emit(info)
         return True
 
     def send_breakpoint_clear(self, filename: str, line: int) -> bool:
@@ -198,9 +195,6 @@ class PicocSession(QObject):
             self.status_changed.emit("当前未连接。")
             return False
         self.send_requested.emit(f":bkptclear {filename} {line}\r\n")
-        info = f"清除断点: 第{line}行"
-        self.console_text.emit(f"{info}\r\n")
-        self.status_changed.emit(info)
         return True
 
     def send_debug_vars(self) -> bool:
@@ -302,9 +296,6 @@ class PicocSession(QObject):
         if filename == "(none)":
             return
         self._enter_debug(filename, line_no)
-        info = f"单步至: 第{line_no}行" if kind == "step" else f"断点触发: 第{line_no}行"
-        self.console_text.emit(f"{info}\r\n")
-        self.status_changed.emit(info)
 
     def _dispatch_structured(self, prefix: str, data: str) -> None:
         if prefix == ":pong":
