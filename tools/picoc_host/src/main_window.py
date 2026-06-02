@@ -44,9 +44,7 @@ from theme import (
     CONSOLE_SEP,
     CONSOLE_SOURCE,
     CONSOLE_SUCCESS,
-    FONT_CONSOLE,
-    FONT_TABLE,
-    FONT_UI,
+    INFO,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     SUCCESS,
@@ -94,6 +92,8 @@ class MainWindow(QMainWindow):
         self._serial_manager = SerialManager()
         self._session = PicocSession()
         self._editor_file_path = None  # The file currently shown in editor
+        self._current_theme = "dark"
+        self._theme_colors = {}  # filled by _switch_theme()
 
         self._batch_queue: list = []
         self._batch_results: list = []
@@ -115,7 +115,14 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self._refresh_ports()
+        from theme import get_theme as _gt
+        self._theme_colors, _ = _gt(self._current_theme)
         self._update_ui_state()
+
+        # Apply saved theme
+        saved = self._load_theme_preference()
+        if saved != "dark":
+            self._switch_theme(saved)
 
     # ── Layout ──────────────────────────────────────────────
 
@@ -130,11 +137,20 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
         self.addToolBar(toolbar)
+        self._toolbar_labels = []
+
+        def _tb_label(text):
+            lbl = QLabel(text)
+            self._toolbar_labels.append(lbl)
+            return lbl
+
+        def _tb_btn(text):
+            return QPushButton(text)
 
         # ── Run (leftmost, most used) ──
-        self.upload_button = QPushButton("执行选中")
-        self.run_all_button = QPushButton("全部执行")
-        self.abort_button = QPushButton("中止")
+        self.upload_button = _tb_btn("执行选中")
+        self.run_all_button = _tb_btn("全部执行")
+        self.abort_button = _tb_btn("中止")
         toolbar.addWidget(self.upload_button)
         toolbar.addWidget(self.run_all_button)
         toolbar.addWidget(self.abort_button)
@@ -142,8 +158,8 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
 
         # ── Debug ──
-        self.debug_continue_btn = QPushButton("继续")
-        self.debug_step_btn = QPushButton("单步")
+        self.debug_continue_btn = _tb_btn("继续")
+        self.debug_step_btn = _tb_btn("单步")
         toolbar.addWidget(self.debug_continue_btn)
         toolbar.addWidget(self.debug_step_btn)
 
@@ -151,61 +167,37 @@ class MainWindow(QMainWindow):
         self.debug_eval_input.setPlaceholderText("表达式...")
         self.debug_eval_input.setFixedWidth(120)
         toolbar.addWidget(self.debug_eval_input)
-        self.debug_eval_btn = QPushButton("求值")
+        self.debug_eval_btn = _tb_btn("求值")
         toolbar.addWidget(self.debug_eval_btn)
 
-        self.debug_info_label = QLabel("调试未激活")
-        self.debug_info_label.setStyleSheet(f"color: {TEXT_SECONDARY}; padding-left: 8px;")
+        self.debug_info_label = _tb_label("调试未激活")
         toolbar.addWidget(self.debug_info_label)
 
         toolbar.addSeparator()
 
         # ── Serial (right side, config) ──
-        toolbar.addWidget(QLabel("串口"))
+        toolbar.addWidget(_tb_label("串口"))
         self.port_combo = QComboBox()
         self.port_combo.setMinimumWidth(100)
         toolbar.addWidget(self.port_combo)
 
-        self.refresh_button = QPushButton("刷新")
+        self.refresh_button = _tb_btn("刷新")
         toolbar.addWidget(self.refresh_button)
 
-        toolbar.addWidget(QLabel("波特率"))
+        toolbar.addWidget(_tb_label("波特率"))
         self.baud_combo = QComboBox()
         self.baud_combo.addItems(["115200", "230400", "460800", "921600"])
         self.baud_combo.setCurrentText("115200")
         self.baud_combo.setMinimumWidth(90)
         toolbar.addWidget(self.baud_combo)
 
-        self.connect_button = QPushButton("连接")
-        self.disconnect_button = QPushButton("断开")
+        self.connect_button = _tb_btn("连接")
+        self.disconnect_button = _tb_btn("断开")
         toolbar.addWidget(self.connect_button)
         toolbar.addWidget(self.disconnect_button)
 
     def _build_menubar(self) -> None:
         menubar = self.menuBar()
-        menubar.setStyleSheet(f"""
-            QMenuBar {{
-                background-color: {BG_SIDEBAR};
-                color: {TEXT_PRIMARY};
-                border-bottom: 1px solid #3c3c3c;
-            }}
-            QMenuBar::item:selected {{
-                background-color: #094771;
-            }}
-            QMenu {{
-                background-color: #2d2d2d;
-                color: {TEXT_PRIMARY};
-                border: 1px solid #3c3c3c;
-            }}
-            QMenu::item:selected {{
-                background-color: #094771;
-            }}
-            QMenu::separator {{
-                height: 1px;
-                background-color: #3c3c3c;
-                margin: 4px 8px;
-            }}
-        """)
 
         # ── 文件菜单 ──
         file_menu = menubar.addMenu("文件(&F)")
@@ -254,6 +246,15 @@ class MainWindow(QMainWindow):
         save_log_action = view_menu.addAction("保存日志")
         save_log_action.triggered.connect(self._save_log)
 
+        view_menu.addSeparator()
+        self.dark_theme_action = view_menu.addAction("暗色主题")
+        self.light_theme_action = view_menu.addAction("亮色主题")
+        self.dark_theme_action.setCheckable(True)
+        self.light_theme_action.setCheckable(True)
+        self.dark_theme_action.setChecked(True)
+        self.dark_theme_action.triggered.connect(lambda: self._switch_theme("dark"))
+        self.light_theme_action.triggered.connect(lambda: self._switch_theme("light"))
+
     def _build_central_area(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
@@ -271,47 +272,33 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(main_splitter)
 
     def _build_sidebar(self) -> QWidget:
+        from theme import get_theme
+        colors, _ = get_theme(self._current_theme)
+
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setStyleSheet(f"""
-            QWidget#sidebar {{
-                background-color: {BG_SIDEBAR};
-                border-right: 1px solid #3c3c3c;
-            }}
-        """)
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
 
         explorer_label = QLabel("资源管理器")
-        explorer_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-weight: bold; font: {FONT_UI};")
+        self._explorer_label = explorer_label
+        explorer_label.setStyleSheet(f"color: {colors['TEXT_PRIMARY']}; font-weight: bold;")
         layout.addWidget(explorer_label)
 
         self.clear_list_button = QPushButton("清空列表")
         layout.addWidget(self.clear_list_button)
 
         self.file_list = QListWidget()
+        self.file_list.setStyleSheet(
+            f"QListWidget {{ background-color: {colors['BG_SIDEBAR']}; color: {colors['TEXT_PRIMARY']}; border: 1px solid {colors['BORDER']}; font-size: 13px; }}"
+            f"QListWidget::item {{ padding: 4px 8px; border-bottom: 1px solid {colors['BORDER']}; }}"
+            f"QListWidget::item:selected {{ background-color: {colors['BG_SELECTED']}; color: {colors['TEXT_PRIMARY']}; }}"
+            f"QListWidget::item:hover {{ background-color: {colors['BG_HOVER']}; }}"
+        )
         self.file_list.setSelectionMode(QListWidget.SingleSelection)
         self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.file_list.customContextMenuRequested.connect(self._show_file_context_menu)
-        self.file_list.setStyleSheet("""
-            QListWidget {
-                background-color: #1e1e1e;
-                color: #e0e0e0;
-                border: 1px solid #3c3c3c;
-                font-size: 13px;
-            }
-            QListWidget::item {
-                padding: 3px 6px;
-            }
-            QListWidget::item:selected {
-                background-color: #094771;
-                color: #ffffff;
-            }
-            QListWidget::item:hover {
-                background-color: #2a2d2e;
-            }
-        """)
         layout.addWidget(self.file_list, 1)
         return sidebar
 
@@ -324,28 +311,11 @@ class MainWindow(QMainWindow):
         # ── File tab bar (VS Code style) ──
         self.tab_bar = QWidget()
         self.tab_bar.setFixedHeight(35)
-        self.tab_bar.setStyleSheet(f"""
-            QWidget {{
-                background-color: {BG_SIDEBAR};
-                border-bottom: 1px solid #3c3c3c;
-            }}
-        """)
         tab_layout = QHBoxLayout(self.tab_bar)
         tab_layout.setContentsMargins(8, 0, 0, 0)
         tab_layout.setSpacing(0)
 
         self.tab_label = QLabel("  未打开文件")
-        self.tab_label.setStyleSheet(f"""
-            QLabel {{
-                color: {TEXT_PRIMARY};
-                background-color: {BG_PRIMARY};
-                border: 1px solid #3c3c3c;
-                border-bottom: none;
-                border-top: 2px solid {BORDER_FOCUS};
-                padding: 6px 16px;
-                font: {FONT_UI};
-            }}
-        """)
         tab_layout.addWidget(self.tab_label)
         tab_layout.addStretch()
 
@@ -355,38 +325,38 @@ class MainWindow(QMainWindow):
         self.editor_stack = QStackedWidget()
 
         # Welcome page
-        welcome = QWidget()
-        welcome.setStyleSheet(f"background-color: {BG_PRIMARY};")
-        welcome_layout = QVBoxLayout(welcome)
+        self._welcome = QWidget()
+        self._welcome.setStyleSheet(f"background-color: {BG_PRIMARY};")
+        welcome_layout = QVBoxLayout(self._welcome)
         welcome_layout.setAlignment(Qt.AlignCenter)
 
         welcome_layout.addStretch()
 
-        title = QLabel("MCUStudio")
-        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 28px; font-weight: bold; background: transparent;")
-        title.setAlignment(Qt.AlignCenter)
-        welcome_layout.addWidget(title)
+        self._welcome_title = QLabel("MCUStudio")
+        self._welcome_title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 28px; font-weight: bold; background: transparent;")
+        self._welcome_title.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(self._welcome_title)
 
-        subtitle = QLabel("单片机开发调试系统")
-        subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 14px; background: transparent;")
-        subtitle.setAlignment(Qt.AlignCenter)
-        welcome_layout.addWidget(subtitle)
+        self._welcome_subtitle = QLabel("单片机开发调试系统")
+        self._welcome_subtitle.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 14px; background: transparent;")
+        self._welcome_subtitle.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(self._welcome_subtitle)
 
         welcome_layout.addSpacing(30)
 
-        hint = QLabel("从左侧资源管理器选择文件夹或文件打开")
-        hint.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; background: transparent;")
-        hint.setAlignment(Qt.AlignCenter)
-        welcome_layout.addWidget(hint)
+        self._welcome_hint = QLabel("从左侧资源管理器选择文件夹或文件打开")
+        self._welcome_hint.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; background: transparent;")
+        self._welcome_hint.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(self._welcome_hint)
 
-        shortcut_hint = QLabel("Ctrl+O 选择文件夹    Ctrl+S 保存")
-        shortcut_hint.setStyleSheet(f"color: #6a6a6a; font-size: 12px; background: transparent;")
-        shortcut_hint.setAlignment(Qt.AlignCenter)
-        welcome_layout.addWidget(shortcut_hint)
+        self._welcome_shortcut = QLabel("Ctrl+O 选择文件夹    Ctrl+S 保存")
+        self._welcome_shortcut.setStyleSheet(f"color: {INFO}; font-size: 12px; background: transparent;")
+        self._welcome_shortcut.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(self._welcome_shortcut)
 
         welcome_layout.addStretch()
 
-        self.editor_stack.addWidget(welcome)
+        self.editor_stack.addWidget(self._welcome)
 
         # Editor page
         editor_page = QWidget()
@@ -419,19 +389,15 @@ class MainWindow(QMainWindow):
         bottom_layout.addLayout(input_row)
 
         # Output console
+        from theme import get_theme as _gt2
+        _tc, _ = _gt2(self._current_theme)
         self.console_view = QPlainTextEdit()
         self.console_view.setReadOnly(True)
         self.console_view.setFont(QFont("Cascadia Code", 12))
         self.console_view.setPlaceholderText("执行结果输出...")
-        self.console_view.setStyleSheet(f"""
-            QPlainTextEdit {{
-                background-color: {BG_PRIMARY};
-                color: {CONSOLE_SOURCE};
-                border: 1px solid #3c3c3c;
-                font-family: 'Cascadia Code', Consolas, monospace;
-                font-size: 12px;
-            }}
-        """)
+        self.console_view.setStyleSheet(
+            f"QPlainTextEdit {{ background-color: {_tc['BG_PRIMARY']}; color: {_tc['CONSOLE_SOURCE']}; border: 1px solid {_tc['BORDER']}; selection-background-color: {_tc['BG_SELECTED']}; }}"
+        )
         bottom_layout.addWidget(self.console_view, 1)
 
         # Variable tables
@@ -464,29 +430,31 @@ class MainWindow(QMainWindow):
         code_font.setStyleStrategy(QFont.PreferAntialias)
         lexer.setDefaultFont(code_font)
 
-        # Dark theme colors for lexer
-        lexer.setColor(QColor("#d4d4d4"))                    # Default text
-        lexer.setColor(QColor("#569cd6"), QsciLexerCPP.Keyword)
-        lexer.setColor(QColor("#4ec9b0"), QsciLexerCPP.KeywordSet2)
-        lexer.setColor(QColor("#ce9178"), QsciLexerCPP.SingleQuotedString)
-        lexer.setColor(QColor("#ce9178"), QsciLexerCPP.DoubleQuotedString)
-        lexer.setColor(QColor("#ce9178"), QsciLexerCPP.RawString)
-        lexer.setColor(QColor("#6a9955"), QsciLexerCPP.Comment)
-        lexer.setColor(QColor("#6a9955"), QsciLexerCPP.CommentLine)
-        lexer.setColor(QColor("#6a9955"), QsciLexerCPP.CommentDoc)
-        lexer.setColor(QColor("#b5cea8"), QsciLexerCPP.Number)
-        lexer.setColor(QColor("#9cdcfe"), QsciLexerCPP.Identifier)
-        lexer.setColor(QColor("#d4d4d4"), QsciLexerCPP.Operator)
-        lexer.setColor(QColor("#808080"), QsciLexerCPP.PreProcessor)
+        # Theme-aware lexer colors
+        from theme import get_lexer_theme
+        lt = get_lexer_theme(self._current_theme)
+        lexer.setColor(QColor(lt["default"]))
+        lexer.setColor(QColor(lt["keyword"]), QsciLexerCPP.Keyword)
+        lexer.setColor(QColor(lt["keyword2"]), QsciLexerCPP.KeywordSet2)
+        lexer.setColor(QColor(lt["string"]), QsciLexerCPP.SingleQuotedString)
+        lexer.setColor(QColor(lt["string"]), QsciLexerCPP.DoubleQuotedString)
+        lexer.setColor(QColor(lt["string"]), QsciLexerCPP.RawString)
+        lexer.setColor(QColor(lt["comment"]), QsciLexerCPP.Comment)
+        lexer.setColor(QColor(lt["comment"]), QsciLexerCPP.CommentLine)
+        lexer.setColor(QColor(lt["comment"]), QsciLexerCPP.CommentDoc)
+        lexer.setColor(QColor(lt["number"]), QsciLexerCPP.Number)
+        lexer.setColor(QColor(lt["identifier"]), QsciLexerCPP.Identifier)
+        lexer.setColor(QColor(lt["operator"]), QsciLexerCPP.Operator)
+        lexer.setColor(QColor(lt["preproc"]), QsciLexerCPP.PreProcessor)
 
         # Background and font for all lexer styles
         for i in range(20):
-            lexer.setPaper(QColor("#1e1e1e"), i)
+            lexer.setPaper(QColor(lt["background"]), i)
             lexer.setFont(code_font, i)
-        lexer.setDefaultPaper(QColor("#1e1e1e"))
+        lexer.setDefaultPaper(QColor(lt["background"]))
 
         self.editor.setLexer(lexer)
-        self.editor.setPaper(QColor("#1e1e1e"))
+        self.editor.setPaper(QColor(lt["background"]))
 
         # Font
         self.editor.setFont(code_font)
@@ -496,8 +464,8 @@ class MainWindow(QMainWindow):
         margin_font.setStyleStrategy(QFont.PreferAntialias)
         self.editor.setMarginType(0, QsciScintilla.NumberMargin)
         self.editor.setMarginWidth(0, "00000")
-        self.editor.setMarginsBackgroundColor(QColor("#252526"))
-        self.editor.setMarginsForegroundColor(QColor("#858585"))
+        self.editor.setMarginsBackgroundColor(QColor(lt["margin_bg"]))
+        self.editor.setMarginsForegroundColor(QColor(lt["margin_fg"]))
         self.editor.setMarginsFont(margin_font)
 
         # Breakpoint margin (margin 1)
@@ -514,13 +482,13 @@ class MainWindow(QMainWindow):
         self.editor.setMarkerForegroundColor(QColor("#1e1e1e"), EXECUTION_MARKER)
 
         # Editor settings
-        self.editor.setCaretForegroundColor(QColor("#d4d4d4"))
+        self.editor.setCaretForegroundColor(QColor(lt["default"]))
         self.editor.setIndentationGuides(True)
         self.editor.setIndentationsUseTabs(False)
         self.editor.setTabWidth(4)
         self.editor.setAutoIndent(True)
         self.editor.setFolding(QsciScintilla.BoxedTreeFoldStyle)
-        self.editor.setFoldMarginColors(QColor("#252526"), QColor("#252526"))
+        self.editor.setFoldMarginColors(QColor(lt["margin_bg"]), QColor(lt["margin_bg"]))
 
         # Brace matching
         self.editor.setBraceMatching(QsciScintilla.SloppyBraceMatch)
@@ -568,29 +536,6 @@ class MainWindow(QMainWindow):
         )
         self.var_table.setFont(QFont("Cascadia Code", 12))
         self.var_table.itemChanged.connect(self._on_var_item_changed)
-        self.var_table.setStyleSheet("""
-            QTableWidget {
-                background-color: #1e1e1e;
-                color: #e0e0e0;
-                border: 1px solid #3c3c3c;
-                gridline-color: #3c3c3c;
-            }
-            QTableWidget::item {
-                padding: 2px 4px;
-                color: #e0e0e0;
-            }
-            QTableWidget::item:selected {
-                background-color: #094771;
-                color: #ffffff;
-            }
-            QHeaderView::section {
-                background-color: #2d2d2d;
-                color: #b0b0b0;
-                border: 1px solid #3c3c3c;
-                padding: 3px 6px;
-                font-weight: bold;
-            }
-        """)
 
         layout.addWidget(self.var_table)
         return group
@@ -607,29 +552,6 @@ class MainWindow(QMainWindow):
         self.watch_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.watch_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.watch_table.setFont(QFont("Cascadia Code", 12))
-        self.watch_table.setStyleSheet("""
-            QTableWidget {
-                background-color: #1e1e1e;
-                color: #e0e0e0;
-                border: 1px solid #3c3c3c;
-                gridline-color: #3c3c3c;
-            }
-            QTableWidget::item {
-                padding: 2px 4px;
-                color: #e0e0e0;
-            }
-            QTableWidget::item:selected {
-                background-color: #094771;
-                color: #ffffff;
-            }
-            QHeaderView::section {
-                background-color: #2d2d2d;
-                color: #b0b0b0;
-                border: 1px solid #3c3c3c;
-                padding: 3px 6px;
-                font-weight: bold;
-            }
-        """)
 
         remove_row = QHBoxLayout()
         self.watch_remove_btn = QPushButton("移除选中")
@@ -874,16 +796,6 @@ class MainWindow(QMainWindow):
             return
 
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #2d2d2d;
-                color: #e0e0e0;
-                border: 1px solid #3c3c3c;
-            }
-            QMenu::item:selected {
-                background-color: #094771;
-            }
-        """)
 
         # 打开文件
         open_action = menu.addAction("打开文件")
@@ -1138,6 +1050,107 @@ class MainWindow(QMainWindow):
         self._editor_dirty = False
         self._update_title_dirty()
 
+    # ── Theme ────────────────────────────────────────────────
+
+    def _switch_theme(self, theme_name: str) -> None:
+        from PyQt5.QtWidgets import QApplication
+        from theme import get_theme, get_lexer_theme
+        colors, stylesheet = get_theme(theme_name)
+        QApplication.instance().setStyleSheet(stylesheet)
+        lt = get_lexer_theme(theme_name)
+
+        # Build a fresh lexer — QScintilla only picks up colors at setLexer() time
+        lexer = QsciLexerCPP()
+        code_font = QFont("Consolas", 13)
+        code_font.setStyleStrategy(QFont.PreferAntialias)
+        lexer.setDefaultFont(code_font)
+        for i in range(20):
+            lexer.setFont(code_font, i)
+        lexer.setColor(QColor(lt["default"]))
+        lexer.setColor(QColor(lt["keyword"]), QsciLexerCPP.Keyword)
+        lexer.setColor(QColor(lt["keyword2"]), QsciLexerCPP.KeywordSet2)
+        lexer.setColor(QColor(lt["string"]), QsciLexerCPP.SingleQuotedString)
+        lexer.setColor(QColor(lt["string"]), QsciLexerCPP.DoubleQuotedString)
+        lexer.setColor(QColor(lt["string"]), QsciLexerCPP.RawString)
+        lexer.setColor(QColor(lt["comment"]), QsciLexerCPP.Comment)
+        lexer.setColor(QColor(lt["comment"]), QsciLexerCPP.CommentLine)
+        lexer.setColor(QColor(lt["comment"]), QsciLexerCPP.CommentDoc)
+        lexer.setColor(QColor(lt["number"]), QsciLexerCPP.Number)
+        lexer.setColor(QColor(lt["identifier"]), QsciLexerCPP.Identifier)
+        lexer.setColor(QColor(lt["operator"]), QsciLexerCPP.Operator)
+        lexer.setColor(QColor(lt["preproc"]), QsciLexerCPP.PreProcessor)
+        for i in range(20):
+            lexer.setPaper(QColor(lt["background"]), i)
+        lexer.setDefaultPaper(QColor(lt["background"]))
+        self.editor.setLexer(lexer)
+
+        self.editor.setFont(code_font)
+        self.editor.setCaretForegroundColor(QColor(lt["default"]))
+        self.editor.setMarginsBackgroundColor(QColor(lt.get("margin_bg", "#252526")))
+        self.editor.setMarginsForegroundColor(QColor(lt.get("margin_fg", "#858585")))
+        self.editor.setFoldMarginColors(QColor(lt.get("margin_bg", "#252526")), QColor(lt.get("margin_bg", "#252526")))
+
+        # Use colors from the theme dict — module-level constants are frozen to dark
+        tp = colors["TEXT_PRIMARY"]
+        ts = colors["TEXT_SECONDARY"]
+
+        # Explorer label
+        if hasattr(self, '_explorer_label'):
+            self._explorer_label.setStyleSheet(f"color: {tp}; font-weight: bold;")
+        # Toolbar labels
+        for lbl in getattr(self, '_toolbar_labels', []):
+            lbl.setStyleSheet(f"color: {tp};")
+        # Toolbar buttons
+        for btn_name in ('upload_button', 'run_all_button', 'abort_button',
+                         'debug_continue_btn', 'debug_step_btn', 'debug_eval_btn',
+                         'refresh_button', 'connect_button', 'disconnect_button',
+                         'send_button', 'clear_list_button',
+                         'watch_add_btn', 'watch_clear_btn', 'watch_remove_btn'):
+            btn = getattr(self, btn_name, None)
+            if btn is not None:
+                btn.setStyleSheet(f"color: {tp};")
+        # Debug info label
+        if hasattr(self, 'debug_info_label'):
+            self.debug_info_label.setStyleSheet(f"color: {ts}; padding-left: 8px;")
+        # File list
+        if hasattr(self, 'file_list'):
+            self.file_list.setStyleSheet(
+                f"QListWidget {{ background-color: {colors['BG_SIDEBAR']}; color: {tp}; border: 1px solid {colors['BORDER']}; font-size: 13px; }}"
+                f"QListWidget::item {{ padding: 4px 8px; border-bottom: 1px solid {colors['BORDER']}; }}"
+                f"QListWidget::item:selected {{ background-color: {colors['BG_SELECTED']}; color: {tp}; }}"
+                f"QListWidget::item:hover {{ background-color: {colors['BG_HOVER']}; }}"
+            )
+        # Console view background
+        if hasattr(self, 'console_view'):
+            self.console_view.setStyleSheet(
+                f"QPlainTextEdit {{ background-color: {colors['BG_PRIMARY']}; color: {colors['CONSOLE_SOURCE']}; border: 1px solid {colors['BORDER']}; selection-background-color: {colors['BG_SELECTED']}; }}"
+            )
+        # Welcome page
+        for attr in ('_welcome', '_welcome_title', '_welcome_subtitle',
+                      '_welcome_hint', '_welcome_shortcut'):
+            w = getattr(self, attr, None)
+            if w is None:
+                continue
+            if attr == '_welcome':
+                w.setStyleSheet(f"background-color: {colors['BG_PRIMARY']};")
+            elif attr == '_welcome_title':
+                w.setStyleSheet(f"color: {tp}; font-size: 28px; font-weight: bold; background: transparent;")
+            else:
+                w.setStyleSheet(f"color: {ts}; font-size: 13px; background: transparent;")
+        self.dark_theme_action.setChecked(theme_name == "dark")
+        self.light_theme_action.setChecked(theme_name == "light")
+        self._current_theme = theme_name
+        self._theme_colors = colors
+        self._save_theme_preference(theme_name)
+
+    def _save_theme_preference(self, theme_name: str) -> None:
+        from PyQt5.QtCore import QSettings
+        QSettings("MCUStudio", "Theme").setValue("theme", theme_name)
+
+    def _load_theme_preference(self) -> str:
+        from PyQt5.QtCore import QSettings
+        return QSettings("MCUStudio", "Theme").value("theme", "dark")
+
     # ── Upload & Batch ──────────────────────────────────────
 
     def _upload_file(self) -> None:
@@ -1354,7 +1367,8 @@ class MainWindow(QMainWindow):
         type_name = TYPE_MAP.get(type_char, type_char)
         type_item = QTableWidgetItem(type_name)
         type_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-        type_item.setForeground(QColor("#569cd6"))
+        from theme import TEXT_ACCENT
+        type_item.setForeground(QColor(TEXT_ACCENT))
         self.var_table.setItem(row, 1, type_item)
 
         value_item = QTableWidgetItem(value)
@@ -1460,7 +1474,8 @@ class MainWindow(QMainWindow):
 
             type_item = QTableWidgetItem("—")
             type_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-            type_item.setForeground(QColor("#569cd6"))
+            from theme import TEXT_ACCENT
+            type_item.setForeground(QColor(TEXT_ACCENT))
             self.watch_table.setItem(row, 1, type_item)
 
             value_item = QTableWidgetItem("—")
@@ -1550,12 +1565,13 @@ class MainWindow(QMainWindow):
         self.debug_eval_btn.setEnabled(debug_active)
 
         mode = self._session.mode
+        tc = self._theme_colors or {}
         if mode == "REPL":
-            self.mode_label.setStyleSheet(f"color: {SUCCESS}; padding: 0 8px;")
+            self.mode_label.setStyleSheet(f"color: {tc.get('SUCCESS', '#4ec9b0')}; padding: 0 8px;")
         elif mode in ("LOAD", "BUSY"):
-            self.mode_label.setStyleSheet(f"color: {WARNING}; padding: 0 8px;")
+            self.mode_label.setStyleSheet(f"color: {tc.get('WARNING', '#dcdcaa')}; padding: 0 8px;")
         else:
-            self.mode_label.setStyleSheet(f"color: {TEXT_SECONDARY}; padding: 0 8px;")
+            self.mode_label.setStyleSheet(f"color: {tc.get('TEXT_SECONDARY', '#b0b0b0')}; padding: 0 8px;")
 
     # ── Console Output ──────────────────────────────────────
 
@@ -1572,6 +1588,19 @@ class MainWindow(QMainWindow):
             self._append_remote_line(self._console_line_buffer)
             self._console_line_buffer = ""
 
+    def _console_color(self, key: str) -> str:
+        """Get console color from current theme, falling back to dark-theme constant."""
+        mapping = {
+            'CONSOLE_ERROR': 'CONSOLE_ERROR',
+            'CONSOLE_SUCCESS': 'CONSOLE_SUCCESS',
+            'CONSOLE_PROMPT': 'CONSOLE_PROMPT',
+            'CONSOLE_SOURCE': 'CONSOLE_SOURCE',
+            'CONSOLE_INFO': 'CONSOLE_INFO',
+            'CONSOLE_SEP': 'CONSOLE_SEP',
+        }
+        theme_key = mapping.get(key, key)
+        return self._theme_colors.get(theme_key, globals().get(key, '#e0e0e0'))
+
     def _append_remote_line(self, line: str) -> None:
         if not line.strip():
             return
@@ -1580,21 +1609,21 @@ class MainWindow(QMainWindow):
 
         lowered = line.lower()
         if any(keyword in lowered for keyword in ERROR_KEYWORDS):
-            color = CONSOLE_ERROR
+            color = self._console_color('CONSOLE_ERROR')
         elif "ready for next file" in lowered:
-            color = CONSOLE_SUCCESS
+            color = self._console_color('CONSOLE_SUCCESS')
         elif "picoc>" in line or "load>" in line:
-            color = CONSOLE_PROMPT
+            color = self._console_color('CONSOLE_PROMPT')
         else:
-            color = CONSOLE_SOURCE
+            color = self._console_color('CONSOLE_SOURCE')
 
         self._append_colored_line(line, color)
 
     def _append_info_line(self, text: str) -> None:
-        self._append_colored_line(text, CONSOLE_INFO)
+        self._append_colored_line(text, self._console_color('CONSOLE_INFO'))
 
     def _append_separator_line(self, title: str) -> None:
-        self._append_colored_line(f"---------------- {title} ----------------", CONSOLE_SEP)
+        self._append_colored_line(f"---------------- {title} ----------------", self._console_color('CONSOLE_SEP'))
 
     def _append_colored_line(self, text: str, color: str) -> None:
         cursor = self.console_view.textCursor()

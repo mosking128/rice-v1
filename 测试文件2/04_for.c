@@ -1,13 +1,11 @@
+
 #include <stdio.h>
 
-int a;
-a = 42;
-printf("%d\n", a);
+int Count;
 
-int b = 64;
-printf("%d\n", b);
-
-int c = 12, d = 34;
-printf("%d, %d\n", c, d);
+for (Count = 1; Count <= 10; Count++)
+{
+    printf("%d\n", Count);
+}
 
 void main() {}

@@ -1,13 +1,13 @@
 #include <stdio.h>
 
-int a;
-a = 42;
-printf("%d\n", a);
+printf("Hello world\n");
 
-int b = 64;
-printf("%d\n", b);
+int Count;
+for (Count = -5; Count <= 5; Count++)
+    printf("Count = %d\n", Count);
 
-int c = 12, d = 34;
-printf("%d, %d\n", c, d);
+printf("String 'hello', 'there' is '%s', '%s'\n", "hello", "there");
+printf("Character 'A' is '%c'\n", 65);
+printf("Character 'a' is '%c'\n", 'a');
 
 void main() {}

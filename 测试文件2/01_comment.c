@@ -1,13 +1,10 @@
 #include <stdio.h>
 
-int a;
-a = 42;
-printf("%d\n", a);
+printf("Hello\n");
+printf("Hello\n"); /* this is a comment */ printf("Hello\n");
+printf("Hello\n");
+// this is also a comment sayhello();
+printf("你好Hello\n");
 
-int b = 64;
-printf("%d\n", b);
-
-int c = 12, d = 34;
-printf("%d, %d\n", c, d);
 
 void main() {}

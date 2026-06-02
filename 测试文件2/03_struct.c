@@ -1,13 +1,21 @@
 #include <stdio.h>
 
-int a;
-a = 42;
-printf("%d\n", a);
+struct fred
+{
+    int boris;
+    int natasha;
+};
 
-int b = 64;
-printf("%d\n", b);
+struct fred bloggs;
 
-int c = 12, d = 34;
-printf("%d, %d\n", c, d);
+bloggs.boris = 12;
+bloggs.natasha = 34;
+
+printf("%d\n", bloggs.boris);
+printf("%d\n", bloggs.natasha);
+
+//struct fred jones[2];
+//jones[0].boris = 12;
+//jones[0].natasha = 34;
 
 void main() {}
