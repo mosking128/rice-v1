@@ -17,6 +17,10 @@ if errorlevel 1 (
         set ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe
     ) else if exist "C:\Program Files\Inno Setup 6\ISCC.exe" (
         set ISCC=C:\Program Files\Inno Setup 6\ISCC.exe
+    ) else if exist "D:\Program Files (x86)\Inno Setup 6\ISCC.exe" (
+        set ISCC=D:\Program Files (x86)\Inno Setup 6\ISCC.exe
+    ) else if exist "D:\Program Files\Inno Setup 6\ISCC.exe" (
+        set ISCC=D:\Program Files\Inno Setup 6\ISCC.exe
     ) else (
         echo.
         echo Inno Setup not found.
