@@ -41,7 +41,7 @@
 #define STRUCT_TABLE_SIZE 11                /* size of struct/union member table (can expand) */
 
 /* 交互模式提示符 */
-#define INTERACTIVE_PROMPT_START "starting picoc " PICOC_VERSION "\n"
+#define INTERACTIVE_PROMPT_START "RICE " PICOC_VERSION " -- Runtime Interactive C Environment\n"
 #define INTERACTIVE_PROMPT_STATEMENT "picoc> "
 #define INTERACTIVE_PROMPT_LINE "     > "
 
