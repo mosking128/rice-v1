@@ -6,6 +6,7 @@ Desktop.ini
 *.log
 .claude/
 CLAUDE.md
+docs/
 
 # Python
 __pycache__/
@@ -22,11 +23,6 @@ env/
 build/
 dist/
 *.spec
-
-# Host tool release artifacts
-tools/picoc_host/release/
-tools/picoc_host/dist/
-tools/picoc_host/build/
 
 # PicoC desktop build artifacts
 picoc/msvc/
@@ -68,5 +64,3 @@ MDK-ARM/**/*.axf
 MDK-ARM/**/*.hex
 MDK-ARM/**/*.bin
 
-# Optional local package cache
-tools/picoc_host/wheelhouse/

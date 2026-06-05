@@ -1,136 +1,137 @@
-# PicoScript
+# RICE — Runtime Interactive C Environment
 
 [English](README.md) | [中文](README_CN.md)
 
-本项目将 PicoC 移植到 STM32H750，在 `USART1` 上提供交互式 REPL、整文件上传执行和 Windows 上位机工具，目标是用尽量小的代价跑通 MCU 侧 C 脚本解释工作流，并沉淀一套可复用的 PicoC 嵌入式移植思路。
+RICE ports the **PicoC** C interpreter to **STM32H750VBTx** (Cortex-M7, 480 MHz), providing an interactive C scripting environment over a serial port — no OS, no filesystem, no PC-side tooling required.
 
-This project ports PicoC to STM32H750 and provides a `USART1`-based REPL, whole-file source upload/execution, and a Windows host tool for a practical embedded C scripting workflow.
+Connect via `USART1` (115200 8N1) with any serial terminal (PuTTY, TeraTerm, sscom, minicom, screen, etc.) and start writing C interactively.
 
 ## Features
 
 - Interactive PicoC REPL over `USART1`
-- File upload mode with `:load / :end / :abort`
-- Multi-line source input and whole-file execution
-- **Interactive debugger**: breakpoints, single-step, expression evaluation, variable edit, watch
-- STM32H750 Keil MDK project ready for flashing
-- Windows host tool for serial console, file upload, batch testing, and debugging
+- File upload execution via `:load / :end / :abort` protocol (paste source from any terminal)
+- Multi-line source input with automatic completeness analysis
+- Interactive debugging over serial: breakpoints, single-step, expression evaluation, variable inspection and modification, watchpoints
+- STM32H750 Keil MDK project ready to build and flash
+- Bare-metal super-loop architecture — no RTOS dependency
 
-## Debugger
+## Hardware
 
-The host tool provides an interactive debugger with breakpoint, single-step, expression evaluation, variable edit, and watch support.
+- **MCU:** STM32H750VBTx (Cortex-M7, 480 MHz, 128 KB SRAM)
+- **Serial:** USART1 (PA9 TX, PA10 RX), 115200 baud, 8N1
+- **Programmer:** ST-Link (SWD)
+- **Power:** USB or external 3.3V
 
-### Debug Toolbar
+## Quick Start
 
-The debug toolbar is always visible at the bottom of the host tool window.
+1. Open `MDK-ARM/UART_DMA_H750.uvprojx` in Keil MDK.
+2. Build (F7) and flash via ST-Link.
+3. Open a serial terminal on `USART1` at `115200 8N1`.
+4. After boot, you should see the `picoc>` prompt.
 
-| Section | Controls |描述|
-|---------|----------|-------------|
-| Breakpoint | `行号` input + `设断点` / `清断点` | Set or clear a line breakpoint before uploading |
-| Execution | `继续` / `单步` | Continue execution or step one statement |
-| Expression | `表达式` input + `求值` | Evaluate a C expression in the current scope |
-| Variables | `变量监视` table | View in-scope variables and double-click values to edit them |
-| Watch | `Watch` table + `加监视` / `移除选中` | Track selected variables across stops and highlight changes |
+## Manual Serial Usage
 
-### Workflow
+All interaction happens through plain-text commands over the serial port. Use any terminal emulator.
 
-1. Connect the board and wait for `picoc> `.
-2. Enter a line number (e.g. `5`) and click `设断点` — the console shows `设置断点: 第5行`.
-3. Upload a `.c` file and execute it.
-4. Execution pauses at the breakpoint — the toolbar label shows `已中断: 第5行`.
-5. When execution stops, the `变量监视` table is refreshed with visible variables.
-6. Double-click a variable value to modify it, or add selected variables into the `Watch` table.
-7. Click `单步` to step statement by statement, or enter an expression like `x + 1` and click `求值`.
-8. Click `继续` to resume until the next breakpoint or file end.
-9. Breakpoints are automatically cleared after each file execution.
+### REPL Mode
 
-### Current Limits
+Type C statements directly at the `picoc>` prompt. Multi-line input (e.g. function definitions, loops) is automatically detected — the interpreter waits until your input is syntactically complete before executing.
 
-- Debugging currently targets uploaded source executed as `serial_load`.
-- Breakpoint line numbers refer to the uploaded file content, not REPL history.
-- `:eval` currently wraps the expression with `printf("%d\\n", (...))`, so integer-like expressions are the safest choice.
-- Breakpoints are copied into the isolated file-run instance and cleared after that run finishes.
-- Variable edit currently targets basic scalar values represented in the debugger output.
-- Watch values are refreshed on each break/step stop rather than continuously while the target is running.
+```
+picoc> int x = 42;
+picoc> printf("x = %d\n", x);
+x = 42
+picoc> for (int i = 0; i < 3; i++) { printf("%d\n", i); }
+0
+1
+2
+```
 
-### Debug Protocol
+### File Upload Mode
 
-The host and device communicate via structured UART protocol extensions:
+Send `:load` to enter upload mode, paste your C source code, then send `:end` to execute. The source runs in an isolated PicoC instance (does not pollute the REPL namespace).
 
-| Direction | Command | Description |
-|-----------|---------|-------------|
-| Host → Device | `:bkpt <file> <line>` | Set breakpoint |
-| Host → Device | `:bkptclear <file> <line>` | Clear breakpoint |
-| Host → Device | `:cont` | Continue execution |
-| Host → Device | `:step` | Single-step one statement |
-| Host → Device | `:eval <expr>` | Evaluate expression |
-| Host → Device | `:vars` | Enumerate visible variables |
-| Host → Device | `:set <name> <value>` | Modify a variable value |
-| Device → Host | `:break <file> <line> <col>` | Breakpoint hit notification |
-| Device → Host | `:step <file> <line> <col>` | Step break notification |
-| Device → Host | `:var <type> <name> <value>` | One variable entry |
-| Device → Host | `:ok vars` | Variable enumeration finished |
-| Device → Host | `:ok set` / `:err set ...` | Variable write result |
+```
+:load
+#include <stdio.h>
+
+int main() {
+    printf("Hello from uploaded code!\n");
+    return 0;
+}
+:end
+```
+
+Send `:abort` to cancel an upload or interrupt a running script.
+
+### Protocol Commands
+
+| Command | Description |
+|---------|-------------|
+| `:load [size]` | Enter file upload mode |
+| `:end` | Execute uploaded source |
+| `:abort` | Cancel upload or abort running script |
+| `:ping` | Heartbeat check (responds `:pong`) |
+| `:reset` | Reset PicoC interpreter to clean state |
+
+### Interactive Debugging
+
+Debug commands can be sent at any time when the REPL is idle or a script is stopped at a breakpoint.
+
+| Command | Description |
+|---------|-------------|
+| `:bkpt <file> <line>` | Set a breakpoint |
+| `:bkptclear <file> <line>` | Clear a breakpoint |
+| `:cont` | Continue execution |
+| `:step` | Single-step one statement |
+| `:eval <expr>` | Evaluate a C expression in the current scope |
+| `:vars` | List all visible variables |
+| `:set <name> <value>` | Modify a variable value |
+
+Device-to-host debug notifications:
+
+| Notification | Description |
+|-------------|-------------|
+| `:break <file> <line> <col>` | Breakpoint hit |
+| `:step <file> <line> <col>` | Step completed |
+| `:var <type> <name> <value>` | Variable data (one per line) |
+| `:ok vars` | Variable enumeration finished |
+| `:ok set` / `:err set ...` | Variable write result |
+
+**Typical debug workflow:**
+
+1. Set a breakpoint: send `:bkpt serial_load 5`
+2. Upload and execute a source file via `:load` ... `:end`
+3. When the breakpoint hits, the device sends `:break serial_load 5 0`
+4. Inspect variables with `:vars`, evaluate expressions with `:eval x + 1`
+5. Modify a variable with `:set x 100`
+6. Step with `:step` or continue with `:cont`
+7. Breakpoints auto-clear after each file execution
 
 ## Repository Layout
 
-- [Core](Core): STM32 application code
-- [picoc](picoc): upstream PicoC source plus STM32 platform port
-- [MDK-ARM](MDK-ARM): Keil project files
-- [tools/picoc_host/src](tools/picoc_host/src): host tool source code
-- [tools/picoc_host/src/README.md](tools/picoc_host/src/README.md): host tool usage
-- [docs/移植注意事项.md](docs/%E7%A7%BB%E6%A4%8D%E6%B3%A8%E6%84%8F%E4%BA%8B%E9%A1%B9.md): porting notes, memory layout and hardware registration guide
-- [docs/调试使用说明.md](docs/%E8%B0%83%E8%AF%95%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.md): breakpoint, single-step, variable edit, and watch guide
-
-## Current Scope
-
-- Script input comes from serial only
-- No target-side filesystem loading
-- Minimal built-in standard library first
-- Focused on stable bring-up and practical interaction
-
-## Firmware Quick Start
-
-1. Open [MDK-ARM/UART_DMA_H750.uvprojx](MDK-ARM/UART_DMA_H750.uvprojx) in Keil MDK.
-2. Build and flash the STM32H750 target.
-3. Open `USART1` at `115200`.
-4. After boot, wait for `picoc> `.
-
-## Host Tool Quick Start
-
-Source mode:
-
-```powershell
-cd tools/picoc_host
-run_host.bat
+```
+├── Core/               STM32 application code (serial, PicoC app layer)
+├── picoc/              PicoC interpreter source plus STM32 platform port
+├── Drivers/            STM32 HAL and CMSIS drivers
+├── MDK-ARM/            Keil MDK project files
+├── README.md
+├── README_CN.md
+└── LICENSE
 ```
 
-Packaged mode:
+## Scope
 
-- Build with `build_exe.bat`
-- Deliver the whole `tools/picoc_host/release/PicoCHost` folder to other users
+- Script input via serial port only
+- No target-side filesystem
+- Minimal built-in C standard library
+- Focus on stable REPL interaction and file execution
 
-## Typical Workflow
+## Platform Notes
 
-### File Upload & Execution
-
-1. Connect the board and open the host tool.
-2. Wait for `picoc> `.
-3. Add `.c` files to the list, select one, and click `执行选中`.
-4. Source code is uploaded, executed, and results appear in the console.
-
-### Debugging
-
-1. Connect and set a breakpoint by entering a line number and clicking `设断点`.
-2. Upload and execute a file — execution pauses at the breakpoint.
-3. Use `变量监视` to inspect locals, edit values in place, and add key variables into `Watch`.
-4. Use `单步`, `求值`, and `继续` to inspect and control program state.
-5. Breakpoints are cleared automatically after each run.
-
-## Notes
-
-- The current board-side upload buffer is RAM-based.
-- This repository keeps source and packaged host-tool output separated.
-- Generated build artifacts and local packaging caches are ignored by Git.
+- The upload buffer is RAM-based (8 KB).
+- PicoC uses `setjmp/longjmp` for error recovery — script errors return to the REPL prompt cleanly.
+- The serial stack is three layers: DMA/ISR → ring buffer (8 KB RX + 8 KB TX, lock-free SPSC) → PicoC app state machine (REPL / LOAD / DRAIN modes).
 
 ## License
 
